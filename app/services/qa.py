@@ -17,7 +17,7 @@ from app.rag.generation import AnswerGenerator, OpenAIAnswerGenerator, validate_
 from app.rag.ingestion import parse_document, parse_questions, split_documents
 from app.rag.planning import QuestionPlan, build_question_plan
 from app.rag.retrieval import IndexBuilder, merge_retrieval_results
-from app.schemas.qa import NOT_FOUND, AnswerResult, QAResponse
+from app.schemas.qa import AnswerResult, QAResponse
 
 logger = logging.getLogger("app")
 
@@ -157,7 +157,7 @@ class QAService:
                         extra={
                             "stage": "generation",
                             "duration_ms": round((perf_counter() - answer_started) * 1000, 2),
-                            "supported": result.answer != NOT_FOUND,
+                            "supported": result.status != "not_found",
                             "selected_chunk_count": len(result.citations),
                             "citation_count": len(result.citations),
                             "citation_chars": sum(

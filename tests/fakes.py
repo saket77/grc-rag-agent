@@ -6,7 +6,7 @@ from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 
 from app.rag.planning import QuestionPlan
-from app.schemas.qa import NOT_FOUND, GeneratedAnswer, GeneratedPartAnswer
+from app.schemas.qa import GeneratedAnswer, GeneratedPartAnswer
 
 
 class DeterministicEmbeddings(Embeddings):
@@ -96,7 +96,7 @@ class GroundedGenerator:
             generated = GeneratedPartAnswer(
                 part_id=part.part_id,
                 status="not_found",
-                answer=NOT_FOUND,
+                answer=f"No supporting passage was identified for: {part.question}",
                 evidence_chunk_ids=[],
             )
             for marker, answer in facts:

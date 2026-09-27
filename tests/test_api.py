@@ -131,14 +131,16 @@ async def test_explicit_subquestions_share_one_embedding_batch_and_merge_context
         assert {chunk.metadata["page"] for chunk in generator.calls[0][1]} == {1, 2}
 
 
-async def test_absent_evidence_returns_exact_not_found_and_empty_citations():
+async def test_absent_evidence_preserves_explanation_with_not_found_and_empty_citations():
     async with api_client() as (client, _, _):
         response = await client.post("/qa", files=uploads(["What is the retention policy?"]))
         assert response.status_code == 200
         assert response.json()["results"] == [
             {
                 "question": "What is the retention policy?",
-                "answer": NOT_FOUND,
+                "answer": (
+                    "No supporting passage was identified for: What is the retention policy?"
+                ),
                 "status": "not_found",
                 "citations": [],
             }
@@ -185,7 +187,7 @@ async def test_mixed_subquestions_return_partial_with_one_generation_call():
             "question": question,
             "answer": (
                 "The service is hosted on AWS. "
-                "The provided evidence does not specify: What is the retention policy."
+                "No supporting passage was identified for: What is the retention policy?"
             ),
             "status": "partial",
             "citations": [{"page": None, "excerpt": '{\n  "hosting": "AWS"\n}'}],

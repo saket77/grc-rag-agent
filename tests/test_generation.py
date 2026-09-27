@@ -122,7 +122,7 @@ def test_json_citations_have_null_page_and_duplicates_are_removed(chunks):
     assert result.citations[0].excerpt == chunks[1].page_content
 
 
-def test_unsupported_always_returns_exact_contract(chunks):
+def test_unsupported_legacy_fallback_remains_valid(chunks):
     generated = unsupported_answer()
     assert validate_answer(plan("Unknown?"), chunks, generated).model_dump() == {
         "question": "Unknown?",
@@ -130,6 +130,65 @@ def test_unsupported_always_returns_exact_contract(chunks):
         "status": "not_found",
         "citations": [],
     }
+
+
+def test_unsupported_explanation_is_preserved_without_citations(chunks):
+    explanation = "The evidence identifies a hosting provider but does not specify its region."
+    result = validate_answer(
+        plan("Which region?"), chunks, unsupported_answer(answer=f"  {explanation}  ")
+    )
+
+    assert result.model_dump() == {
+        "question": "Which region?",
+        "answer": explanation,
+        "status": "not_found",
+        "citations": [],
+    }
+
+
+def test_all_unsupported_explanations_follow_plan_order(chunks):
+    question_plan = plan("Which controls: 1. Redundancy, 2. Failover?")
+    explanations = [
+        "The supplied evidence does not establish redundancy.",
+        "The supplied evidence does not describe failover behavior.",
+    ]
+    generated = GeneratedAnswer(
+        parts=[
+            GeneratedPartAnswer(
+                part_id=part.part_id,
+                status="not_found",
+                answer=explanation,
+                evidence_chunk_ids=[],
+            )
+            for part, explanation in reversed(
+                list(zip(question_plan.parts, explanations, strict=True))
+            )
+        ]
+    )
+
+    result = validate_answer(question_plan, chunks, generated)
+
+    assert result.answer == " ".join(explanations)
+    assert result.status == "not_found"
+    assert result.citations == []
+
+
+@pytest.mark.parametrize(
+    "changes", [{"answer": ""}, {"answer": " \n "}, {"evidence_chunk_ids": ["chunk-1"]}]
+)
+@pytest.mark.parametrize("has_supported_part", [False, True])
+def test_invalid_unsupported_parts_are_rejected(chunks, changes, has_supported_part):
+    question_plan = plan("Which region? Which cloud?" if has_supported_part else "Which region?")
+    generated = unsupported_answer(answer="The supplied evidence does not specify a region.")
+    generated.parts[0] = generated.parts[0].model_copy(update=changes)
+    if has_supported_part:
+        generated.parts.append(supported_answer(part_id="part_2").parts[0])
+
+    with pytest.raises(ServiceError) as exc:
+        validate_answer(question_plan, chunks, generated)
+
+    assert exc.value.status_code == 502
+    assert exc.value.code == "provider_response_invalid"
 
 
 @pytest.mark.parametrize(
@@ -244,6 +303,20 @@ def test_partial_answer_preserves_supported_parts_and_names_missing_parts(chunks
     ]
 
 
+def test_partial_answer_preserves_unsupported_explanation(chunks):
+    explanation = "The evidence names the provider but does not establish a retention period."
+    generated = supported_answer()
+    generated.parts.append(unsupported_answer(part_id="part_2", answer=explanation).parts[0])
+
+    result = validate_answer(plan("Which cloud? What is the retention period?"), chunks, generated)
+
+    assert result.answer == f"The service is hosted on AWS. {explanation}"
+    assert result.status == "partial"
+    assert [citation.model_dump() for citation in result.citations] == [
+        {"page": 12, "excerpt": chunks[0].page_content}
+    ]
+
+
 def test_single_part_preserves_a_grounded_partial_answer(chunks):
     answer = "The production service is hosted on AWS; the backup provider is not specified."
     generated = GeneratedAnswer(
@@ -334,7 +407,7 @@ def test_all_numbered_parts_not_found_retains_exact_fallback(chunks):
                 )
             ]
         ),
-        unsupported_answer(answer="I do not know"),
+        unsupported_answer(answer=" "),
         unsupported_answer(evidence_chunk_ids=["chunk-1"]),
     ],
 )

@@ -195,15 +195,27 @@ def validate_answer(
     if set(generated_by_id) != expected_ids:
         raise _invalid_response("answer_part_ids_invalid", stage="citation_validation")
 
+    for part in generated.parts:
+        if part.status == "not_found":
+            if not part.answer.strip():
+                raise _invalid_response("unsupported_answer_blank", stage="citation_validation")
+            if part.evidence_chunk_ids:
+                raise _invalid_response(
+                    "unsupported_part_has_evidence", stage="citation_validation"
+                )
+
     answered_parts = [part for part in generated.parts if part.status != "not_found"]
     if not answered_parts:
-        for part in generated.parts:
-            if part.status == "not_found" and (
-                part.answer.strip() != NOT_FOUND or part.evidence_chunk_ids
-            ):
-                raise _invalid_response("unsupported_part_has_answer", stage="citation_validation")
+        explanations = [generated_by_id[part.part_id].answer.strip() for part in expected_parts]
         return AnswerResult(
-            question=plan.original_question, answer=NOT_FOUND, status="not_found", citations=[]
+            question=plan.original_question,
+            answer=(
+                NOT_FOUND
+                if all(text == NOT_FOUND for text in explanations)
+                else " ".join(explanations)
+            ),
+            status="not_found",
+            citations=[],
         )
 
     sources = {}
@@ -221,9 +233,10 @@ def validate_answer(
     for expected_part in expected_parts:
         part = generated_by_id[expected_part.part_id]
         if part.status == "not_found":
-            if part.answer.strip() != NOT_FOUND or part.evidence_chunk_ids:
-                raise _invalid_response("unsupported_part_has_answer", stage="citation_validation")
-            if expected_part.label:
+            explanation = part.answer.strip()
+            if explanation != NOT_FOUND:
+                answers.append(explanation)
+            elif expected_part.label:
                 answers.append(f"{expected_part.label}: Not specified in the provided evidence.")
             else:
                 missing_question = expected_part.question.rstrip(" ?.!")

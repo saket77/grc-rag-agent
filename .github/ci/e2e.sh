@@ -124,9 +124,13 @@ assert results[0]["answer"] == "The service is hosted on AWS."
 assert [result["status"] for result in results] == ["found", "not_found", "not_found"]
 assert results[0]["citations"][0]["page"] is None
 assert "hosted on AWS" in results[0]["citations"][0]["excerpt"]
-assert results[1]["answer"] == "Not found in document"
+assert results[1]["answer"] == (
+    "No supporting passage was identified for: Is personal information disclosed to third parties?"
+)
 assert results[1]["citations"] == []
-assert results[2]["answer"] == "Not found in document"
+assert results[2]["answer"] == (
+    "No supporting passage was identified for: How frequently do you conduct penetration tests?"
+)
 assert results[2]["citations"] == []
 
 partial_results = json.loads(partial_response_path.read_text())["results"]
@@ -136,7 +140,7 @@ assert partial["question"] == "Which cloud provider? What is the retention polic
 assert partial["status"] == "partial"
 assert partial["answer"] == (
     "The service is hosted on AWS. "
-    "The provided evidence does not specify: What is the retention policy."
+    "No supporting passage was identified for: What is the retention policy?"
 )
 assert partial["citations"] == results[0]["citations"]
 assert "chunk_" not in partial["answer"] and "part_" not in partial["answer"]
@@ -145,6 +149,18 @@ events = []
 for line in log_path.read_text().splitlines():
     if line.startswith("{"):
         events.append(json.loads(line))
+
+for expected_request_id, public_results in (
+    (sample_request_id, results), (partial_request_id, partial_results),
+):
+    completed = {
+        event["question_number"]: event for event in events
+        if event.get("request_id") == expected_request_id
+        and event.get("event") == "answer_task_complete"
+    }
+    assert len(completed) == len(public_results)
+    for number, result in enumerate(public_results, 1):
+        assert completed[number]["supported"] is (result["status"] != "not_found")
 
 required = {"ingestion_complete", "index_complete", "retrieval_complete", "generation_complete"}
 for expected_request_id in (sample_request_id, partial_request_id):
