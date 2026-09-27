@@ -1,0 +1,10 @@
+{
+  "title": "Synthetic Example Security Report",
+  "hosting": {
+    "provider": "AWS",
+    "statement": "The production service is hosted on AWS."
+  },
+  "privacy": {
+    "statement": "Personal information is disclosed to contracted subprocessors solely to provide the service."
+  }
+}

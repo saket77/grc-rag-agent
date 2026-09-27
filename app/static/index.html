@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Zania · Document QA</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">ZANIA · CODING CHALLENGE</p>
+        <h1>Ask your document.</h1>
+        <p>Upload a questionnaire and a source document. Review each answer alongside its evidence.</p>
+      </header>
+      <section class="panel" aria-labelledby="upload-heading">
+        <h2 id="upload-heading">Upload files</h2>
+        <form id="qa-form" action="/qa" method="post" enctype="multipart/form-data">
+          <div class="files">
+            <div>
+              <label for="questions">Questions</label>
+              <p id="questions-help">A JSON array of questions. Try examples/questions.json.</p>
+              <input id="questions" name="questions" type="file" accept=".json,application/json" aria-describedby="questions-help" required>
+            </div>
+            <div>
+              <label for="document">Source document</label>
+              <p id="document-help">A PDF or JSON report. Try examples/document.json.</p>
+              <input id="document" name="document" type="file" accept=".pdf,.json,application/pdf,application/json" aria-describedby="document-help" required>
+            </div>
+          </div>
+          <p class="note">Processing sends document text to OpenAI and uses API credits. The API key stays on the server.</p>
+          <button id="submit-button" type="submit">Answer questions</button>
+        </form>
+        <p id="status" role="status" aria-live="polite">Ready when you are.</p>
+        <p id="request-info" class="note"></p>
+      </section>
+      <section id="results-section" aria-labelledby="results-heading" hidden>
+        <div class="results-heading">
+          <h2 id="results-heading">Results</h2>
+        </div>
+        <div id="results"></div>
+      </section>
+      <footer>
+        <a href="/docs">API documentation</a>
+        <span>Answers without supporting evidence are marked “Not found in document”.</span>
+      </footer>
+    </main>
+  </body>
+</html>
