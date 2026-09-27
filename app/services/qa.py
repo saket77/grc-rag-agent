@@ -121,7 +121,10 @@ class QAService:
                 unique_retrieval_queries, operation="question_embedding"
             )
             search_rows = await self.workers.run(
-                index.search, query_vectors, self.settings.retrieval_k
+                index.search,
+                unique_retrieval_queries,
+                query_vectors,
+                self.settings.retrieval_k,
             )
             rows_by_query = dict(zip(unique_retrieval_queries, search_rows, strict=True))
             contexts = []

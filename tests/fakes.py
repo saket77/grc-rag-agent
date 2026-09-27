@@ -95,7 +95,7 @@ class GroundedGenerator:
                 facts = [("30 days", "Retention is 30 days.")]
             generated = GeneratedPartAnswer(
                 part_id=part.part_id,
-                status="not_found",
+                coverage="none",
                 answer=f"No supporting passage was identified for: {part.question}",
                 evidence_chunk_ids=[],
             )
@@ -104,7 +104,7 @@ class GroundedGenerator:
                 if source is not None:
                     generated = GeneratedPartAnswer(
                         part_id=part.part_id,
-                        status="supported",
+                        coverage="full",
                         answer=answer,
                         evidence_chunk_ids=[
                             "invented" if self.invalid_chunk_id else source.metadata["chunk_id"]

@@ -23,6 +23,7 @@ cleanup() {
     sed -n '1,240p' "$artifacts/server.log" 2>/dev/null || true
   fi
   rm -rf "$artifacts"
+  return "$status"
 }
 trap cleanup EXIT
 

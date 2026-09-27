@@ -196,7 +196,7 @@ def validate_answer(
         raise _invalid_response("answer_part_ids_invalid", stage="citation_validation")
 
     for part in generated.parts:
-        if part.status == "not_found":
+        if part.coverage in {"related_only", "none"}:
             if not part.answer.strip():
                 raise _invalid_response("unsupported_answer_blank", stage="citation_validation")
             if part.evidence_chunk_ids:
@@ -204,7 +204,7 @@ def validate_answer(
                     "unsupported_part_has_evidence", stage="citation_validation"
                 )
 
-    answered_parts = [part for part in generated.parts if part.status != "not_found"]
+    answered_parts = [part for part in generated.parts if part.coverage in {"full", "partial"}]
     if not answered_parts:
         explanations = [generated_by_id[part.part_id].answer.strip() for part in expected_parts]
         return AnswerResult(
@@ -232,7 +232,7 @@ def validate_answer(
     seen: set[str] = set()
     for expected_part in expected_parts:
         part = generated_by_id[expected_part.part_id]
-        if part.status == "not_found":
+        if part.coverage in {"related_only", "none"}:
             explanation = part.answer.strip()
             if explanation != NOT_FOUND:
                 answers.append(explanation)
@@ -279,8 +279,6 @@ def validate_answer(
     return AnswerResult(
         question=plan.original_question,
         answer=" ".join(answers),
-        status=(
-            "found" if all(part.status == "supported" for part in generated.parts) else "partial"
-        ),
+        status=("found" if all(part.coverage == "full" for part in generated.parts) else "partial"),
         citations=citations,
     )

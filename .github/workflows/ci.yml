@@ -50,6 +50,9 @@ jobs:
       - name: Exercise the real HTTP API with deterministic providers
         run: bash .github/ci/e2e.sh
 
+      - name: Exercise validation, limits, timeouts, and safe failures over HTTP
+        run: bash .github/ci/negative-e2e.sh
+
   container:
     needs: test
     runs-on: ubuntu-latest

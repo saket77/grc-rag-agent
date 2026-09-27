@@ -154,7 +154,7 @@ async def test_partial_status_and_source_owned_citations_reach_the_client():
                 parts=[
                     GeneratedPartAnswer(
                         part_id=plan.parts[0].part_id,
-                        status="partial",
+                        coverage="partial",
                         answer="Production uses AWS; the backup provider is not specified.",
                         evidence_chunk_ids=[chunks[0].metadata["chunk_id"]],
                     )

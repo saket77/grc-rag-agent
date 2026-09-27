@@ -16,7 +16,6 @@ def main() -> int:
         "pydantic_settings",
         "langchain_openai",
         "langchain_text_splitters",
-        "langchain_community.vectorstores",
         "faiss",
         "pypdf",
         "pytest",

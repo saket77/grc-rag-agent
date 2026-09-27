@@ -35,7 +35,7 @@ def chunks():
 def supported_answer(**changes):
     fields = {
         "part_id": "part_1",
-        "status": "supported",
+        "coverage": "full",
         "answer": "The service is hosted on AWS.",
         "evidence_chunk_ids": ["chunk-1"],
     }
@@ -46,7 +46,7 @@ def supported_answer(**changes):
 def unsupported_answer(**changes):
     fields = {
         "part_id": "part_1",
-        "status": "not_found",
+        "coverage": "none",
         "answer": NOT_FOUND,
         "evidence_chunk_ids": [],
     }
@@ -75,26 +75,31 @@ def test_response_schema_requires_exact_planned_parts(part_count):
     assert schema["required"] == ["parts"]
     assert list(parts["properties"]) == expected_ids
     assert parts["required"] == expected_ids
-    assert set(content["required"]) == {"status", "answer", "evidence_chunk_ids"}
+    assert set(content["required"]) == {"coverage", "answer", "evidence_chunk_ids"}
     assert "part_id" not in content["properties"]
-    assert content["properties"]["status"]["enum"] == ["supported", "partial", "not_found"]
+    assert content["properties"]["coverage"]["enum"] == [
+        "full",
+        "partial",
+        "related_only",
+        "none",
+    ]
     for object_schema in (schema, parts, content):
         assert object_schema["additionalProperties"] is False
 
 
-@pytest.mark.parametrize("invalid", ["missing", "extra", "status", "part_id", "old_list"])
+@pytest.mark.parametrize("invalid", ["missing", "extra", "coverage", "part_id", "old_list"])
 def test_response_schema_rejects_invalid_parts(invalid):
     question_plan = plan("Which features: 1. Upload, 2. Export, 3. Search?")
     parts = {
-        part.part_id: {"status": "not_found", "answer": NOT_FOUND, "evidence_chunk_ids": []}
+        part.part_id: {"coverage": "none", "answer": NOT_FOUND, "evidence_chunk_ids": []}
         for part in question_plan.parts
     }
     if invalid == "missing":
         del parts["part_3"]
     elif invalid == "extra":
         parts["part_4"] = parts["part_1"].copy()
-    elif invalid == "status":
-        parts["part_1"]["status"] = "found"
+    elif invalid == "coverage":
+        parts["part_1"]["coverage"] = "supported"
     elif invalid == "part_id":
         parts["part_1"]["part_id"] = "part_1"
     else:
@@ -122,7 +127,7 @@ def test_json_citations_have_null_page_and_duplicates_are_removed(chunks):
     assert result.citations[0].excerpt == chunks[1].page_content
 
 
-def test_unsupported_legacy_fallback_remains_valid(chunks):
+def test_canonical_not_found_fallback_remains_valid(chunks):
     generated = unsupported_answer()
     assert validate_answer(plan("Unknown?"), chunks, generated).model_dump() == {
         "question": "Unknown?",
@@ -156,7 +161,7 @@ def test_all_unsupported_explanations_follow_plan_order(chunks):
         parts=[
             GeneratedPartAnswer(
                 part_id=part.part_id,
-                status="not_found",
+                coverage="related_only",
                 answer=explanation,
                 evidence_chunk_ids=[],
             )
@@ -177,9 +182,13 @@ def test_all_unsupported_explanations_follow_plan_order(chunks):
     "changes", [{"answer": ""}, {"answer": " \n "}, {"evidence_chunk_ids": ["chunk-1"]}]
 )
 @pytest.mark.parametrize("has_supported_part", [False, True])
-def test_invalid_unsupported_parts_are_rejected(chunks, changes, has_supported_part):
+@pytest.mark.parametrize("coverage", ["related_only", "none"])
+def test_invalid_unsupported_parts_are_rejected(chunks, changes, has_supported_part, coverage):
     question_plan = plan("Which region? Which cloud?" if has_supported_part else "Which region?")
-    generated = unsupported_answer(answer="The supplied evidence does not specify a region.")
+    generated = unsupported_answer(
+        coverage=coverage,
+        answer="The supplied evidence does not specify a region.",
+    )
     generated.parts[0] = generated.parts[0].model_copy(update=changes)
     if has_supported_part:
         generated.parts.append(supported_answer(part_id="part_2").parts[0])
@@ -200,44 +209,49 @@ def test_invalid_unsupported_parts_are_rejected(chunks, changes, has_supported_p
         {"evidence_chunk_ids": ["invented"]},
     ],
 )
-@pytest.mark.parametrize("status", ["supported", "partial"])
-def test_invalid_evidence_is_an_error_not_abstention(chunks, changes, status):
+@pytest.mark.parametrize("coverage", ["full", "partial"])
+def test_invalid_evidence_is_an_error_not_abstention(chunks, changes, coverage):
     with pytest.raises(ServiceError) as exc:
-        validate_answer(plan("Where?"), chunks, supported_answer(status=status, **changes))
+        validate_answer(plan("Where?"), chunks, supported_answer(coverage=coverage, **changes))
     assert exc.value.status_code == 502
     assert exc.value.code == "provider_response_invalid"
 
 
 @pytest.mark.parametrize(
-    ("statuses", "expected"),
+    ("coverages", "expected"),
     [
-        (["supported"], "found"),
+        (["full"], "found"),
         (["partial"], "partial"),
-        (["not_found"], "not_found"),
-        (["supported", "supported"], "found"),
-        (["supported", "partial"], "partial"),
-        (["supported", "not_found"], "partial"),
-        (["not_found", "supported"], "partial"),
-        (["partial", "not_found"], "partial"),
+        (["related_only"], "not_found"),
+        (["none"], "not_found"),
+        (["full", "full"], "found"),
+        (["full", "partial"], "partial"),
+        (["full", "related_only"], "partial"),
+        (["none", "full"], "partial"),
+        (["partial", "none"], "partial"),
         (["partial", "partial"], "partial"),
-        (["not_found", "not_found"], "not_found"),
+        (["related_only", "none"], "not_found"),
     ],
 )
-def test_public_status_reflects_coverage_of_all_parts(chunks, statuses, expected):
+def test_public_status_reflects_coverage_of_all_parts(chunks, coverages, expected):
     parts = tuple(
         QuestionPart(part_id=f"part_{index}", question=f"Question {index}?")
-        for index in range(1, len(statuses) + 1)
+        for index in range(1, len(coverages) + 1)
     )
     question_plan = QuestionPlan(original_question="Complete question?", parts=parts)
     generated = GeneratedAnswer(
         parts=[
             GeneratedPartAnswer(
                 part_id=part.part_id,
-                status=status,
-                answer=NOT_FOUND if status == "not_found" else "The service is hosted on AWS.",
-                evidence_chunk_ids=[] if status == "not_found" else ["chunk-1"],
+                coverage=coverage,
+                answer=(
+                    NOT_FOUND
+                    if coverage in {"related_only", "none"}
+                    else "The service is hosted on AWS."
+                ),
+                evidence_chunk_ids=([] if coverage in {"related_only", "none"} else ["chunk-1"]),
             )
-            for part, status in zip(parts, statuses, strict=True)
+            for part, coverage in zip(parts, coverages, strict=True)
         ]
     )
 
@@ -279,13 +293,13 @@ def test_partial_answer_preserves_supported_parts_and_names_missing_parts(chunks
         parts=[
             GeneratedPartAnswer(
                 part_id="part_1",
-                status="supported",
+                coverage="full",
                 answer="The service is hosted on AWS.",
                 evidence_chunk_ids=["chunk-1"],
             ),
             GeneratedPartAnswer(
                 part_id="part_2",
-                status="not_found",
+                coverage="none",
                 answer=NOT_FOUND,
                 evidence_chunk_ids=[],
             ),
@@ -323,7 +337,7 @@ def test_single_part_preserves_a_grounded_partial_answer(chunks):
         parts=[
             GeneratedPartAnswer(
                 part_id="part_1",
-                status="partial",
+                coverage="partial",
                 answer=answer,
                 evidence_chunk_ids=["chunk-1"],
             )
@@ -345,19 +359,19 @@ def test_numbered_option_question_uses_one_result_per_planned_part(chunks):
         parts=[
             GeneratedPartAnswer(
                 part_id="part_1",
-                status="partial",
+                coverage="partial",
                 answer="CPU monitoring is documented, but the APM label is not explicit.",
                 evidence_chunk_ids=["chunk-1"],
             ),
             GeneratedPartAnswer(
                 part_id="part_2",
-                status="not_found",
+                coverage="none",
                 answer=NOT_FOUND,
                 evidence_chunk_ids=[],
             ),
             GeneratedPartAnswer(
                 part_id="part_3",
-                status="not_found",
+                coverage="none",
                 answer=NOT_FOUND,
                 evidence_chunk_ids=[],
             ),
@@ -381,7 +395,7 @@ def test_all_numbered_parts_not_found_retains_exact_fallback(chunks):
     generated = GeneratedAnswer(
         parts=[
             GeneratedPartAnswer(
-                part_id=part.part_id, status="not_found", answer=NOT_FOUND, evidence_chunk_ids=[]
+                part_id=part.part_id, coverage="none", answer=NOT_FOUND, evidence_chunk_ids=[]
             )
             for part in question_plan.parts
         ]
@@ -401,7 +415,7 @@ def test_all_numbered_parts_not_found_retains_exact_fallback(chunks):
             parts=[
                 GeneratedPartAnswer(
                     part_id="wrong",
-                    status="not_found",
+                    coverage="none",
                     answer=NOT_FOUND,
                     evidence_chunk_ids=[],
                 )
@@ -493,7 +507,7 @@ async def test_display_labels_do_not_change_questions_sent_to_the_model(provider
     generated = GeneratedAnswer(
         parts=[
             GeneratedPartAnswer(
-                part_id=part.part_id, status="not_found", answer=NOT_FOUND, evidence_chunk_ids=[]
+                part_id=part.part_id, coverage="none", answer=NOT_FOUND, evidence_chunk_ids=[]
             )
             for part in question_plan.parts
         ]
@@ -518,18 +532,49 @@ async def test_display_labels_do_not_change_questions_sent_to_the_model(provider
 
 
 @pytest.mark.parametrize(
-    ("example", "expected_status"),
+    ("example", "expected_coverages", "expected_status"),
     list(
         zip(
             EXAMPLES,
-            ["found", "partial", "not_found"],
+            [
+                ["full"],
+                ["partial"],
+                ["related_only"],
+                ["related_only", "partial"],
+                ["related_only"],
+                ["related_only"],
+                ["partial", "related_only", "related_only"],
+                ["full"],
+                ["none"],
+            ],
+            [
+                "found",
+                "partial",
+                "not_found",
+                "partial",
+                "not_found",
+                "not_found",
+                "partial",
+                "found",
+                "not_found",
+            ],
             strict=True,
         )
     ),
-    ids=["supported", "partial", "not_found"],
+    ids=[
+        "full",
+        "partial",
+        "related_only",
+        "policy_and_sla",
+        "disconnected_relationship",
+        "adjacent_property",
+        "capability_without_label",
+        "category_preservation",
+        "none",
+    ],
 )
 async def test_prompt_examples_match_request_schema_and_public_contract(
-    provider, example, expected_status
+    provider, example, expected_coverages, expected_status
 ):
     generator, runnable, _ = provider
     envelope = example["input"]
@@ -538,10 +583,9 @@ async def test_prompt_examples_match_request_schema_and_public_contract(
         {"part_id": part.part_id, "question": part.question} for part in question_plan.parts
     ]
     assert json.dumps(example, ensure_ascii=False) in SYSTEM_PROMPT
-    assert len(example["output"]["parts"]) == 1
-    assert example["output"]["parts"]["part_1"]["status"] == (
-        "supported" if expected_status == "found" else expected_status
-    )
+    assert [
+        example["output"]["parts"][part.part_id]["coverage"] for part in question_plan.parts
+    ] == expected_coverages
     chunks = [
         Document(page_content=chunk["text"], metadata={"chunk_id": chunk["chunk_id"]})
         for chunk in envelope["chunks"]
@@ -564,6 +608,22 @@ async def test_prompt_examples_match_request_schema_and_public_contract(
     )
 
 
+def test_prompt_encodes_generic_exact_predicate_contrasts():
+    required_rules = [
+        "policy or plan's existence does not establish requested criteria",
+        "Qualitative timing does not establish a formal or numeric SLA",
+        "Separate statements do not establish a relationship",
+        "redundancy or backup architecture does not establish geographic location",
+        "formal label or full scope is not documented",
+        "Do not list adjacent tools, vendors, or services",
+        "coverage MUST be related_only, never partial",
+        "output only rows explicitly identified as cloud hosting providers",
+        "CPU, memory, application-error, and service-uptime signals directly establish",
+    ]
+    normalized_prompt = " ".join(SYSTEM_PROMPT.split()).casefold()
+    assert all(rule.casefold() in normalized_prompt for rule in required_rules)
+
+
 async def test_provider_normalizes_response_in_plan_order(provider, chunks):
     generator, runnable, _ = provider
     question_plan = plan("Which cloud? Which encryption?")
@@ -573,12 +633,12 @@ async def test_provider_normalizes_response_in_plan_order(provider, chunks):
             {
                 "parts": {
                     "part_2": {
-                        "status": "supported",
+                        "coverage": "full",
                         "answer": "AES-256",
                         "evidence_chunk_ids": ["chunk-2"],
                     },
                     "part_1": {
-                        "status": "supported",
+                        "coverage": "full",
                         "answer": "AWS",
                         "evidence_chunk_ids": ["chunk-1"],
                     },
@@ -608,7 +668,7 @@ async def test_concurrent_questions_have_independent_schemas(provider, chunks):
                     {
                         "parts": {
                             part["part_id"]: {
-                                "status": "not_found",
+                                "coverage": "none",
                                 "answer": NOT_FOUND,
                                 "evidence_chunk_ids": [],
                             }

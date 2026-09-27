@@ -8,9 +8,6 @@ NOT_FOUND = "Not found in document"
 
 
 class Citation(BaseModel):
-    # todo: I dont like this we gotta figure out a way to support json citations like if hthe
-    # knowledge base is json not pdf then we need to be able to give the user a way to see where
-    # in that json that feild came
     page: int | None = Field(description="One-based physical PDF page; null for JSON")
     excerpt: str
 
@@ -32,7 +29,15 @@ class GeneratedPartContent(BaseModel):
     """Model-written fields; the request schema supplies the part identity."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
-    status: Literal["supported", "partial", "not_found"]
+    coverage: Literal["full", "partial", "related_only", "none"] = Field(
+        description=(
+            "full when every requested fact is established; partial when at least one requested "
+            "fact is established but another is missing; related_only when evidence concerns the "
+            "topic but establishes none of the requested facts, including a different property, "
+            "category, data class, or an unlinked subject-object relationship; none when no "
+            "relevant evidence exists"
+        )
+    )
     answer: str = Field(
         description="Concise prose without chunk IDs, part IDs, or inline citation annotations."
     )
@@ -48,11 +53,3 @@ class GeneratedPartAnswer(GeneratedPartContent):
 class GeneratedAnswer(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     parts: list[GeneratedPartAnswer]
-
-    @property
-    def supported(self) -> bool:
-        return any(part.status != "not_found" for part in self.parts)
-
-    @property
-    def evidence_chunk_ids(self) -> list[str]:
-        return [chunk_id for part in self.parts for chunk_id in part.evidence_chunk_ids]
