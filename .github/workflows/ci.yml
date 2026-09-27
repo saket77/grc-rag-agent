@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LANGCHAIN_TRACING_V2: "false"
+  LANGSMITH_TRACING: "false"
+  OPENAI_API_KEY: ""
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install pinned development dependencies
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Check lint and formatting
+        run: |
+          python -m ruff check app tests scripts .github/ci
+          python -m ruff format --check app tests scripts .github/ci
+
+      - name: Run the offline test suite
+        run: python -m pytest -q
+
+      - name: Build the Python package
+        run: python -m build
+
+      - name: Exercise the real HTTP API with deterministic providers
+        run: bash .github/ci/e2e.sh
+
+  container:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Validate Compose configuration
+        run: docker compose config --quiet
+
+      - name: Build and smoke-test the production container
+        run: |
+          set -euo pipefail
+          cleanup() {
+            docker compose down --remove-orphans
+          }
+          trap cleanup EXIT
+
+          docker compose up --build --detach
+          ready=""
+          for _ in {1..60}; do
+            if curl --silent --show-error --fail http://127.0.0.1:8000/healthz > health.json 2>/dev/null; then
+              ready="yes"
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = "yes"
+
+          python -c 'import json; assert json.load(open("health.json")) == {"status": "ok"}'
+          curl --silent --show-error --fail http://127.0.0.1:8000/openapi.json > openapi.json
+          python -c 'import json; paths=json.load(open("openapi.json"))["paths"]; assert {"/healthz", "/qa"} <= set(paths)'
+          docker compose ps

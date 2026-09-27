@@ -5,7 +5,14 @@ from langchain_core.documents import Document
 
 from app.config import Settings
 from app.errors import ServiceError
-from app.retrieval import DocumentIndex, IndexBuilder, build_index, checked_vectors
+from app.planning import build_question_plan
+from app.retrieval import (
+    DocumentIndex,
+    IndexBuilder,
+    build_index,
+    checked_vectors,
+    merge_retrieval_results,
+)
 from app.runtime import ProviderRunner, WorkerPool
 from tests.fakes import DeterministicEmbeddings
 
@@ -89,6 +96,92 @@ def test_query_dimension_mismatch_has_clear_provider_error():
         assert caught.value.code == "invalid_embeddings"
     finally:
         index.close()
+
+
+@pytest.mark.parametrize(
+    ("question", "expected_parts", "expected_queries"),
+    [
+        (
+            "Do you notify clients during incidents? What is the notification SLA?",
+            [
+                "Do you notify clients during incidents?",
+                "What is the notification SLA?",
+            ],
+            [
+                "Do you notify clients during incidents? What is the notification SLA?",
+                "Do you notify clients during incidents?",
+                "What is the notification SLA?",
+            ],
+        ),
+        (
+            "Is personal information handled by third parties? If yes, describe.",
+            ["Is personal information handled by third parties? If yes, describe."],
+            [
+                "Is personal information handled by third parties? If yes, describe.",
+            ],
+        ),
+        (
+            "Which monitoring exists: 1. APM, 2. EUM, 3. DEM?",
+            [
+                "Which monitoring exists APM?",
+                "Which monitoring exists EUM?",
+                "Which monitoring exists DEM?",
+            ],
+            [
+                "Which monitoring exists: 1. APM, 2. EUM, 3. DEM?",
+                "Which monitoring exists APM?",
+                "Which monitoring exists EUM?",
+                "Which monitoring exists DEM?",
+            ],
+        ),
+        (
+            "Which cloud provider?",
+            ["Which cloud provider?"],
+            ["Which cloud provider?"],
+        ),
+    ],
+)
+def test_one_question_plan_drives_model_parts_and_retrieval_queries(
+    question, expected_parts, expected_queries
+):
+    plan = build_question_plan(question)
+
+    assert [part.question for part in plan.parts] == expected_parts
+    assert list(plan.retrieval_queries) == expected_queries
+    assert list(plan.retrieval_queries) == list(
+        dict.fromkeys([plan.original_question, *(part.question for part in plan.parts)])
+    )
+
+
+def test_retrieval_merge_preserves_original_then_round_robins_derived_results():
+    def hit(chunk_id):
+        return Document(page_content=chunk_id, metadata={"chunk_id": chunk_id})
+
+    rows = [
+        [hit("original-1"), hit("shared")],
+        [hit("shared"), hit("derived-1")],
+        [hit("derived-2"), hit("derived-3")],
+    ]
+
+    assert [document.metadata["chunk_id"] for document in merge_retrieval_results(rows, k=2)] == [
+        "original-1",
+        "shared",
+        "derived-2",
+        "derived-1",
+    ]
+
+
+def test_numbered_labels_preserve_option_text_without_changing_search_queries():
+    question = "Which controls exist: 1. Encryption at rest, 2. Encryption in transit?"
+    plan = build_question_plan(question)
+
+    assert [part.label for part in plan.parts] == ["Encryption at rest", "Encryption in transit"]
+    assert list(plan.retrieval_queries) == [
+        question,
+        "Which controls exist Encryption at rest?",
+        "Which controls exist Encryption in transit?",
+    ]
+    assert build_question_plan("Which controls exist?").parts[0].label is None
 
 
 async def test_provider_construction_and_shutdown_are_offline():

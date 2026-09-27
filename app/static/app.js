@@ -5,6 +5,13 @@ const requestInfo = document.querySelector("#request-info");
 const resultsSection = document.querySelector("#results-section");
 const results = document.querySelector("#results");
 
+const coverageLabels = {
+  found: ["Found", "The model reports support for every part of this question."],
+  partial: ["Partial", "The model reports support for only part of this question. Review the gaps and cited evidence."],
+  not_found: ["Not found", "The model found no answer in the retrieved evidence. This does not mean the answer is no."],
+  unknown: ["Status unavailable", "Evidence coverage was not reported. Review the answer and citations."],
+};
+
 function element(tag, text, className) {
   const node = document.createElement(tag);
   node.textContent = text;
@@ -18,11 +25,15 @@ function renderResults(items) {
     const card = document.createElement("article");
     card.className = "panel answer";
     card.append(element("h3", `${index + 1}. ${item.question}`));
+    const coverage = Object.hasOwn(coverageLabels, item.status) ? item.status : "unknown";
+    const [label, explanation] = coverageLabels[coverage];
+    card.append(element("span", label, `support-status support-${coverage}`));
+    card.append(element("p", explanation, "note"));
     card.append(element("p", item.answer, "answer-text"));
     if (item.citations.length > 0) {
       const evidence = document.createElement("details");
       evidence.open = true;
-      evidence.append(element("summary", "Source evidence"));
+      evidence.append(element("summary", coverage === "partial" ? "Source evidence — partial support" : "Source evidence"));
       for (const citation of item.citations) {
         evidence.append(element("p", citation.page === null ? "JSON source" : `Page ${citation.page}`, "source-label"));
         evidence.append(element("blockquote", citation.excerpt));

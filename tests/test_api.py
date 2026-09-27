@@ -8,7 +8,7 @@ from openai import APIConnectionError, AuthenticationError
 
 from app.config import Settings
 from app.main import create_app
-from app.models import NOT_FOUND
+from app.models import NOT_FOUND, GeneratedAnswer, GeneratedPartAnswer
 from tests.fakes import DeterministicEmbeddings, GroundedGenerator
 from tests.pdf_factory import make_pdf
 
@@ -50,6 +50,9 @@ async def test_health_and_docs_work_without_provider_calls():
         schema = (await client.get("/openapi.json")).json()
         body = schema["paths"]["/qa"]["post"]["requestBody"]["content"]["multipart/form-data"]
         assert set(body["schema"]["required"]) == {"questions", "document"}
+        answer_schema = schema["components"]["schemas"]["AnswerResult"]
+        assert "status" in answer_schema["required"]
+        assert answer_schema["properties"]["status"]["enum"] == ["found", "partial", "not_found"]
         assert not embeddings.batches and not generator.calls
 
 
@@ -75,6 +78,7 @@ async def test_json_rag_deduplicates_work_and_restores_original_order():
         results = response.json()["results"]
         assert [result["question"] for result in results] == questions
         assert results[0] == results[2]
+        assert [result["status"] for result in results] == ["found", "found", "found"]
         assert [result["answer"] for result in results[:2]] == [
             "The service is hosted on AWS.",
             "Data is encrypted using AES-256.",
@@ -108,13 +112,66 @@ async def test_pdf_uses_real_page_extraction_chunking_and_vector_retrieval():
         assert all(len(context) == 1 for _, context in generator.calls)
 
 
+async def test_explicit_subquestions_share_one_embedding_batch_and_merge_contexts():
+    question = "Which cloud provider? What encryption is used?"
+    settings = Settings(_env_file=None, retrieval_k=1, chunk_size=80, chunk_overlap=10)
+    document = make_pdf("The service is hosted on AWS.", "Encryption uses AES-256.")
+    async with api_client(settings=settings) as (client, embeddings, generator):
+        response = await client.post("/qa", files=uploads([question], document, kind="pdf"))
+        assert response.status_code == 200, response.text
+        assert embeddings.batches[1] == [
+            question,
+            "Which cloud provider?",
+            "What encryption is used?",
+        ]
+        assert len(generator.calls) == 1
+        received_plan = generator.calls[0][0]
+        assert list(received_plan.retrieval_queries) == embeddings.batches[1]
+        assert [part.question for part in received_plan.parts] == embeddings.batches[1][1:]
+        assert {chunk.metadata["page"] for chunk in generator.calls[0][1]} == {1, 2}
+
+
 async def test_absent_evidence_returns_exact_not_found_and_empty_citations():
     async with api_client() as (client, _, _):
         response = await client.post("/qa", files=uploads(["What is the retention policy?"]))
         assert response.status_code == 200
         assert response.json()["results"] == [
-            {"question": "What is the retention policy?", "answer": NOT_FOUND, "citations": []}
+            {
+                "question": "What is the retention policy?",
+                "answer": NOT_FOUND,
+                "status": "not_found",
+                "citations": [],
+            }
         ]
+
+
+async def test_partial_status_and_source_owned_citations_reach_the_client():
+    class PartialGenerator:
+        async def generate(self, plan, chunks):
+            return GeneratedAnswer(
+                parts=[
+                    GeneratedPartAnswer(
+                        part_id=plan.parts[0].part_id,
+                        status="partial",
+                        answer="Production uses AWS; the backup provider is not specified.",
+                        evidence_chunk_ids=[chunks[0].metadata["chunk_id"]],
+                    )
+                ]
+            )
+
+    question = "Which providers host production and backups?"
+    async with api_client(generator=PartialGenerator()) as (client, _, _):
+        response = await client.post("/qa", files=uploads([question]))
+
+    assert response.status_code == 200, response.text
+    assert response.json()["results"] == [
+        {
+            "question": question,
+            "answer": "Production uses AWS; the backup provider is not specified.",
+            "status": "partial",
+            "citations": [{"page": None, "excerpt": '{\n  "hosting": "AWS"\n}'}],
+        }
+    ]
 
 
 @pytest.mark.parametrize(

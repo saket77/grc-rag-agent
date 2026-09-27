@@ -1,6 +1,6 @@
 # Zania document question answering
 
-A Python 3.12 backend that answers a JSON list of questions from an uploaded PDF or JSON document. It uses LangChain for splitting, embeddings, FAISS retrieval, and structured answer generation. Every supported answer includes a verified source excerpt; unsupported questions return exactly `Not found in document`.
+A Python 3.12 backend that answers a JSON list of questions from an uploaded PDF or JSON document. It uses LangChain for splitting, embeddings, FAISS retrieval, and structured answer generation. Fully and partially supported answers include source-owned excerpts; unsupported questions return exactly `Not found in document`. Each answer exposes its model-assessed evidence coverage as `found`, `partial`, or `not_found`.
 
 The backend includes a minimal HTML/JavaScript upload client at `/`: select the two files, submit them, and review answers and source excerpts. It runs from the same FastAPI server with no Node build or extra frontend service. Streaming, agent planning, and persistent document storage are deferred. FastAPI's `/docs` remains available for inspecting the API contract.
 
@@ -25,6 +25,18 @@ make dev
 Visit [the upload client](http://127.0.0.1:8000/). Select `examples/questions.json` and `examples/document.json`, then choose **Answer questions**. The page shows elapsed time, answers, citations, and the request ID; failed requests display the server's error and allow a retry. Generated content is rendered as text, never inserted as HTML. You can also use [the interactive API docs](http://127.0.0.1:8000/docs): expand `POST /qa`, select **Try it out**, upload the files, and select **Execute**. The UI, `/healthz`, and `/docs` work without an API key; a valid QA request without a configured key receives a clear `503`. With a valid key, executing `/qa` makes billable OpenAI calls. The terminal shows JSON events for ingestion, retrieval, generation, and request completion.
 
 Stop with Ctrl-C. If port 8000 is occupied, use `make dev PORT=8001` and visit port 8001. In another terminal, `make sample` sends the example files (also accepts `PORT=8001`). `make test` exercises the full pipeline offline with deterministic model replacements.
+
+### Docker Compose setup
+
+The repository includes a non-root Python 3.12 image and a Compose service for the shortest repeatable setup:
+
+```bash
+make env
+# Set OPENAI_API_KEY in .env, then:
+docker compose up --build
+```
+
+Visit [the upload client](http://127.0.0.1:8000/) or [API docs](http://127.0.0.1:8000/docs). Compose passes `.env` at runtime but does not copy it into the image, binds the API to loopback, and uses the image's `/healthz` health check. Set `PORT=8001 docker compose up --build` to change the host port. Stop with Ctrl-C followed by `docker compose down`. The container can start without `.env` for health/docs checks, but `POST /qa` returns `503` until a key is configured.
 
 ### Python setup, coming from JavaScript
 
@@ -59,7 +71,7 @@ Both models use the same `OPENAI_API_KEY`, subject to that key's project/model p
 | Job | Model | Output |
 | --- | --- | --- |
 | Convert source chunks and questions for similarity search | `text-embedding-3-small` (configurable with `EMBEDDING_MODEL`) | Numerical vectors |
-| Read retrieved text and write the answer | `gpt-4o-mini` (fixed) | Structured answer and selected chunk IDs |
+| Read retrieved text and write the answer | `gpt-4o-mini` (fixed) | Structured part answers and selected chunk IDs |
 
 This interprets the challenge's “gpt-4o-mini only” instruction as applying to answer generation. An embedding model is a separate component needed for semantic retrieval, not a second answer writer. The provided key must permit both calls. See the [OpenAI embeddings guide](https://developers.openai.com/api/docs/guides/embeddings) and [Structured Outputs guide](https://developers.openai.com/api/docs/guides/structured-outputs).
 
@@ -86,18 +98,36 @@ Successful responses use the required `results` shape:
     {
       "question": "Which cloud providers do you rely on?",
       "answer": "The production service is hosted on AWS.",
+      "status": "found",
       "citations": [{"page": null, "excerpt": "The production service is hosted on AWS."}]
     },
     {
       "question": "How frequently do you conduct penetration tests?",
       "answer": "Not found in document",
+      "status": "not_found",
       "citations": []
+    },
+    {
+      "question": "Which providers host production and backups?",
+      "answer": "Production uses AWS; the backup provider is not specified.",
+      "status": "partial",
+      "citations": [{"page": null, "excerpt": "The production service is hosted on AWS."}]
     }
   ]
 }
 ```
 
 This is an illustrative subset; a real response includes every submitted question in its original order. Identical question strings reuse the same result. The model selects server-issued chunk IDs and never generates citation text or page numbers. The server resolves each selected ID to the complete source chunk, so an excerpt can be up to the configured chunk size (1,000 characters by default). PDF citations use the physical page position starting at 1, not the printed page label. JSON has no pages, so `page` is `null`; its excerpts refer to deterministic JSON normalization (sorted keys, two-space indentation, Unicode preserved). Decimal values retain their precision through `Decimal` and `simplejson`; numbers remain JSON numbers, not strings. Non-finite values and numbers outside supported numeric ranges are rejected. Named fields with empty lists, nulls, or empty strings are retained as source evidence; a null does not automatically mean "no."
+
+The required per-answer `status` is aggregated from the model's part assessments:
+
+| Answer status | Meaning |
+| --- | --- |
+| `found` | Every question part is fully supported. |
+| `partial` | At least some requested information is supported, but one or more parts are incomplete or unsupported. Citations for the supported content are retained. |
+| `not_found` | No part is supported; the exact fallback and empty citations are returned. |
+
+The upload UI displays this status and its meaning beside each answer. These are model-assessed coverage labels, not confidence scores or an independent guarantee of correctness. Source-ID validation ensures excerpts come from retrieved chunks; users still need to inspect whether those excerpts support the claims. `not_found` describes missing evidence, not a negative answer. The prompt applies the same rule to every document: partial answers must establish some requested information, not merely offer related background.
 
 Every response has an `X-Request-ID` header. Errors are sanitized JSON:
 
@@ -115,7 +145,7 @@ Every response has an `X-Request-ID` header. Errors are sanitized JSON:
 | `504` | Provider timeout or whole-request deadline exceeded |
 | `500` | Unexpected internal failure, without exposing exception details |
 
-Results are all-or-nothing: provider errors are not represented as unsupported answers or partial success. Correctly reporting missing evidence is different from a failed model call.
+Request execution is all-or-nothing: provider errors are not represented as unsupported answers or partial request success. A successful question may still contain a grounded partial answer, even when it has only one planned part. Correctly reporting missing evidence is different from a failed model call.
 
 ## Architecture and decisions
 
@@ -124,17 +154,18 @@ POST /qa
   → bounded upload and validation
   → page/record extraction → chunks with source metadata
   → batched embeddings → request-owned in-memory FAISS index
-  → batched embeddings of unique questions → top-k source chunks
-  → concurrent gpt-4o-mini structured answers
+  → one deterministic question plan → one batched FAISS search
+  → original top-k plus bounded, deduplicated subquery evidence
+  → concurrent gpt-4o-mini structured part answers
   → server-side chunk-ID resolution → results in original order
 ```
 
 For code review, start at `app/main.py` (the HTTP contract), then `app/service.py` (the complete workflow). The service calls `ingestion`, `retrieval`, and `generation`; `runtime` provides shared resource controls and `middleware` bounds incoming requests. Tests demonstrate the intended behavior at each boundary.
 
-- **Two-step RAG:** retrieval always precedes generation. No model decides whether to search, and no planner, grader, or subagent adds model calls. One normal generation call is made per unique question; only transient provider failures can cause one retry.
-- **In-memory FAISS:** a normalized vector index and LangChain document store are built once per request and reused for all questions. All query vectors are normalized and searched in one native FAISS batch; its result rows are mapped back through the LangChain document store in question order. Missing neighbors (`-1` when fewer than `k` chunks exist) are skipped. Similarity uses L2 distance on normalized vectors, which has the same ranking as cosine similarity. Source text and metadata remain alongside vectors; the LLM receives text, not vector values. No arbitrary similarity cutoff is treated as proof of absence.
-- **Extraction and chunking:** PDF extractors can emit a newline for every positioned word, especially in table-heavy audit reports. PDF whitespace is therefore normalized to one space before limits, chunking, embeddings, generation, and citation display; words and punctuation are preserved, but visual layout is not. Recursive character splitting starts at 1,000 characters with 200-character target overlap. Chunks cannot cross PDF pages or JSON records and retain character offsets into the normalized source representation. A root JSON object is one record, which can produce many chunks; top-level array items are separate records. Nested arrays such as `pages` are not yet recognized as record boundaries, so a chunk may lose its enclosing title or organization. See the concrete reproduction and acceptance criteria in [NEXT_STEPS.md](docs/NEXT_STEPS.md). This is a baseline for evaluation against real SOC 2 reports, not an optimal setting established by benchmarking.
-- **Grounding:** strict structured output carries a supported flag, concise answer, and selected chunk IDs. Only IDs from that question's retrieved context are accepted. Citation text and page numbers come entirely from server-owned chunk content and metadata; the model cannot author either. Unknown IDs fail with `502`, while insufficient evidence produces the prescribed fallback. This establishes source identity and traceability, not semantic proof that every generated claim is entailed by the selected chunk.
+- **Question parts are a shared contract:** retrieval always precedes generation. No model decides how to decompose or search, and no planner, grader, or subagent adds model calls. One deterministic plan supplies the exact question parts to both retrieval and structured generation, so evidence is searched for every explicit `?` clause or numbered choice instead of relying on one broad embedding to represent a multipart question. Dependent directives such as “If yes, describe” remain attached to the original question. Duplicate original questions and derived queries are computed once, while response order and one result per submitted question are preserved. One normal generation call is made per unique original question; only transient provider failures can cause one retry.
+- **Native multi-question FAISS search:** a normalized vector index and LangChain document store are built once per request and reused for all questions. Embeddings may use several bounded provider batches, but all resulting unique question-part vectors are passed as one matrix to one `store.index.search(matrix, k)` call. FAISS returns one result row per query in the same order; the following Python loop only maps integer positions to documents and does not perform more similarity searches. Each final context keeps the original question's top `k`, then adds unique part-query results round-robin up to `2k`. Missing neighbors (`-1`) are skipped. This batching reduces repeated Python/native boundary overhead without changing per-question ranking semantics. Similarity uses L2 distance on normalized vectors, which has the same ranking as cosine similarity; changing FAISS index type would not improve semantic recall for this exact search.
+- **Extraction and chunking:** PDF extractor whitespace is normalized to one space before limits, chunking, embeddings, generation, and citation display. Recursive character splitting starts at 1,000 characters with 400-character target overlap; the larger measured overlap keeps nearby section headings with continuation evidence. Chunks cannot cross PDF pages or JSON records and retain character offsets into the normalized source representation. A root JSON object is one record, while top-level array items are separate records. Nested arrays such as `pages` are not yet recognized as record boundaries. See [NEXT_STEPS.md](docs/NEXT_STEPS.md) for the remaining JSON-context work.
+- **Grounding and partial answers:** strict structured output returns `supported`, `partial`, or `not_found` for every part in the shared question plan and selects server-issued chunk IDs. The server validates the part set and IDs, resolves citations from source-owned chunks, and preserves grounded partial answers regardless of part count. A partial answer must address the requested property and identify what remains unspecified; merely related facts do not answer it. When every part is `not_found`, the server returns the exact fallback with no citations. Numbered options retain display-only labels for concise missing-part messages; retrieval and generation still use the same full question text. The prompt and answer-field description restrict internal IDs to the structured evidence field. Validation establishes source identity and traceability, not deterministic semantic entailment of every claim or guaranteed prose compliance.
 - **Concurrency:** async provider I/O shares a process-wide semaphore; document and question embeddings are batched. Synchronous extraction, splitting, and FAISS work run in a bounded thread pool. On one generation failure, sibling generation tasks are cancelled. Results retain input order.
 - **Privacy:** the service does not persist uploads or indexes. The multipart parser may temporarily spool large uploads to disk; handles close after success/failure. The total request body is buffered in memory only after enforcing its byte limit during receipt. LangSmith tracing is disabled for the pipeline, and logs contain operational metadata rather than report contents, questions, answers, filenames, or credentials. Document text is still sent to OpenAI for embeddings and retrieved passages for generation.
 
@@ -150,7 +181,7 @@ Settings live in `app/config.py`; all are environment-configurable except the fi
 | `MAX_QUESTIONS` / `MAX_QUESTION_CHARS` | 50 / 2,000 |
 | `MAX_PDF_PAGES` / `MAX_EXTRACTED_CHARS` | 200 / 1,000,000 |
 | `MAX_CHUNKS` / `MAX_JSON_DEPTH` | 2,000 / 64 |
-| `CHUNK_SIZE` / `CHUNK_OVERLAP` | 1,000 / 200 characters |
+| `CHUNK_SIZE` / `CHUNK_OVERLAP` | 1,000 / 400 characters |
 | `RETRIEVAL_K` / `EMBEDDING_BATCH_SIZE` | 6 / 64 |
 | `MAX_PROVIDER_CALLS` / `MAX_ACTIVE_REQUESTS` | 4 / 2 per process |
 | `WORKER_THREADS` | 2; each FAISS operation uses one OpenMP thread |
@@ -176,7 +207,9 @@ make test
 make check
 ```
 
-Tests use synthetic PDF/JSON inputs, deterministic fake embeddings, and mocked generation. Endpoint tests still run real ingestion, chunking, FAISS search, and citation validation. The test fixture blocks external socket connections, and no live API key is required. Coverage includes malformed input, resource limits, abstention, invalid citations, provider errors, timeouts, ordering, duplicate questions, concurrency, and request isolation.
+Tests use synthetic PDF/JSON inputs, deterministic fake embeddings, and mocked generation. Endpoint tests still run real ingestion, chunking, FAISS search, question decomposition, context merging, part validation, and citation resolution. The test fixture blocks external socket connections, and no live API key is required. Coverage includes malformed input, resource limits, partial answers, abstention, invalid citations, provider errors, timeouts, ordering, duplicate questions, concurrency, and request isolation.
+
+GitHub Actions adds a real-HTTP end-to-end boundary: it starts Uvicorn, calls the actual `/healthz`, `/openapi.json`, and multipart `/qa` endpoints with `curl`, and runs the production ingestion, planning, indexing, batched FAISS retrieval, validation, middleware, and serialization path. Only embeddings and answer generation are dependency-injected deterministic providers, so CI needs no credentials and cannot make billable model calls. The check also requires JSON stage events with latency fields and verifies that the sample's three question embeddings are sent as one provider batch. A separate job validates Compose, builds the production image, and smoke-tests its health and OpenAPI endpoints.
 
 To reproduce the offline retrieval comparison:
 
@@ -184,7 +217,9 @@ To reproduce the offline retrieval comparison:
 .venv/bin/python -m scripts.benchmark_retrieval
 ```
 
-On the local review machine, 2,000 synthetic document vectors, 50 queries, 1,536 dimensions, one native thread, and 15 repetitions measured median retrieval time of **27.796 ms** for the prior loop and **21.960 ms** for the batch (**1.27×**). The script verifies matching retrieved documents before timing. This is a local retrieval-only microbenchmark, not an end-to-end latency claim; provider calls are excluded. Results vary by machine and workload. FAISS documents [multi-vector search](https://github.com/facebookresearch/faiss/wiki) as a supported optimization.
+On the local review machine, 2,000 synthetic document vectors, 50 question vectors, 1,536 dimensions, one native thread, and 15 repetitions measured median retrieval time of **19.565 ms** for 50 repeated searches and **16.320 ms** for one matrix search (**1.20×**). The script first verifies identical per-question documents and ordering. This isolates FAISS retrieval and Python/native call overhead; ingestion, embedding, question planning, context merging, and generation are excluded, so it is not an end-to-end latency claim. Results vary by machine and workload. FAISS documents [multi-vector search](https://github.com/facebookresearch/faiss/wiki) as a supported optimization.
+
+For a direct Docker run without Compose:
 
 ```bash
 docker build -t zania-grc-rag:local .

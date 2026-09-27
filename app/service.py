@@ -13,9 +13,10 @@ from app.config import Settings
 from app.errors import ServiceError
 from app.generation import AnswerGenerator, OpenAIAnswerGenerator, validate_answer
 from app.ingestion import parse_document, parse_questions, split_documents
-from app.models import AnswerResult, QAResponse
+from app.models import NOT_FOUND, AnswerResult, QAResponse
 from app.observability import question_number_context
-from app.retrieval import IndexBuilder
+from app.planning import QuestionPlan, build_question_plan
+from app.retrieval import IndexBuilder, merge_retrieval_results
 from app.runtime import ProviderRunner, WorkerPool
 
 logger = logging.getLogger("app")
@@ -106,10 +107,29 @@ class QAService:
         )
         try:
             started = perf_counter()
-            query_vectors = await builder.embed(unique_questions, operation="question_embedding")
-            contexts = await self.workers.run(
+            question_plans = {
+                question: build_question_plan(question) for question in unique_questions
+            }
+            unique_retrieval_queries = list(
+                dict.fromkeys(
+                    query
+                    for question in unique_questions
+                    for query in question_plans[question].retrieval_queries
+                )
+            )
+            query_vectors = await builder.embed(
+                unique_retrieval_queries, operation="question_embedding"
+            )
+            search_rows = await self.workers.run(
                 index.search, query_vectors, self.settings.retrieval_k
             )
+            rows_by_query = dict(zip(unique_retrieval_queries, search_rows, strict=True))
+            contexts = []
+            for question in unique_questions:
+                queries = question_plans[question].retrieval_queries
+                rows = [rows_by_query[query] for query in queries]
+                context = merge_retrieval_results(rows, self.settings.retrieval_k)
+                contexts.append(context)
             logger.info(
                 "retrieval_complete",
                 extra={
@@ -118,7 +138,7 @@ class QAService:
                 },
             )
 
-            async def answer_one(question_number, question, context) -> AnswerResult:
+            async def answer_one(question_number: int, plan: QuestionPlan, context) -> AnswerResult:
                 token = question_number_context.set(question_number)
                 answer_started = perf_counter()
                 logger.info(
@@ -127,18 +147,18 @@ class QAService:
                 )
                 try:
                     generated = await self.provider.call(
-                        lambda: self.generator.generate(question, context),
+                        lambda: self.generator.generate(plan, context),
                         operation="answer_generation",
                         item_count=len(context),
                     )
-                    result = validate_answer(question, context, generated)
+                    result = validate_answer(plan, context, generated)
                     logger.info(
                         "answer_task_complete",
                         extra={
                             "stage": "generation",
                             "duration_ms": round((perf_counter() - answer_started) * 1000, 2),
-                            "supported": generated.supported,
-                            "selected_chunk_count": len(generated.evidence_chunk_ids),
+                            "supported": result.answer != NOT_FOUND,
+                            "selected_chunk_count": len(result.citations),
                             "citation_count": len(result.citations),
                             "citation_chars": sum(
                                 len(citation.excerpt) for citation in result.citations
@@ -172,10 +192,11 @@ class QAService:
             tasks: dict[str, asyncio.Task] = {}
             try:
                 async with asyncio.TaskGroup() as group:
-                    pairs = zip(unique_questions, contexts, strict=True)
-                    for question_number, (question, context) in enumerate(pairs, start=1):
-                        tasks[question] = group.create_task(
-                            answer_one(question_number, question, context)
+                    plans = [question_plans[question] for question in unique_questions]
+                    pairs = zip(plans, contexts, strict=True)
+                    for question_number, (plan, context) in enumerate(pairs, start=1):
+                        tasks[plan.original_question] = group.create_task(
+                            answer_one(question_number, plan, context)
                         )
             except* ServiceError as group_error:
                 raise group_error.exceptions[0] from None

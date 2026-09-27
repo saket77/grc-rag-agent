@@ -1,0 +1,14 @@
+name: zania-grc-rag
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    init: true
+    ports:
+      - "127.0.0.1:${PORT:-8000}:8000"
+    stop_grace_period: 10s

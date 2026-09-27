@@ -5,7 +5,8 @@ import asyncio
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 
-from app.models import NOT_FOUND, GeneratedAnswer
+from app.models import NOT_FOUND, GeneratedAnswer, GeneratedPartAnswer
+from app.planning import QuestionPlan
 
 
 class DeterministicEmbeddings(Embeddings):
@@ -49,14 +50,15 @@ class GroundedGenerator:
         self.gate = gate
         self.invalid_chunk_id = invalid_chunk_id
         self.started = asyncio.Event()
-        self.calls: list[tuple[str, list[Document]]] = []
+        self.calls: list[tuple[QuestionPlan, list[Document]]] = []
         self.completed_questions: list[str] = []
         self.active = 0
         self.peak_active = 0
         self.cancelled = 0
 
-    async def generate(self, question: str, chunks: list[Document]) -> GeneratedAnswer:
-        self.calls.append((question, chunks))
+    async def generate(self, plan: QuestionPlan, chunks: list[Document]) -> GeneratedAnswer:
+        question = plan.original_question
+        self.calls.append((plan, chunks))
         self.active += 1
         self.peak_active = max(self.peak_active, self.active)
         self.started.set()
@@ -68,7 +70,7 @@ class GroundedGenerator:
                 await asyncio.sleep(delay)
             if self.error:
                 raise self.error
-            result = self._answer(question, chunks)
+            result = self._answer(plan, chunks)
             self.completed_questions.append(question)
             return result
         except asyncio.CancelledError:
@@ -77,26 +79,37 @@ class GroundedGenerator:
         finally:
             self.active -= 1
 
-    def _answer(self, question: str, chunks: list[Document]) -> GeneratedAnswer:
-        question_lower = question.lower()
-        facts = []
-        if "cloud" in question_lower or "host" in question_lower:
-            facts = [
-                ("AWS", "The service is hosted on AWS."),
-                ("Azure", "The service is hosted on Azure."),
-            ]
-        elif "encrypt" in question_lower:
-            facts = [("AES-256", "Data is encrypted using AES-256.")]
-        elif "retention" in question_lower:
-            facts = [("30 days", "Retention is 30 days.")]
-        for marker, answer in facts:
-            for chunk in chunks:
-                if marker in chunk.page_content:
-                    return GeneratedAnswer(
-                        supported=True,
+    def _answer(self, plan: QuestionPlan, chunks: list[Document]) -> GeneratedAnswer:
+        results = []
+        for part in plan.parts:
+            question_lower = part.question.lower()
+            facts = []
+            if "cloud" in question_lower or "host" in question_lower:
+                facts = [
+                    ("AWS", "The service is hosted on AWS."),
+                    ("Azure", "The service is hosted on Azure."),
+                ]
+            elif "encrypt" in question_lower:
+                facts = [("AES-256", "Data is encrypted using AES-256.")]
+            elif "retention" in question_lower:
+                facts = [("30 days", "Retention is 30 days.")]
+            generated = GeneratedPartAnswer(
+                part_id=part.part_id,
+                status="not_found",
+                answer=NOT_FOUND,
+                evidence_chunk_ids=[],
+            )
+            for marker, answer in facts:
+                source = next((chunk for chunk in chunks if marker in chunk.page_content), None)
+                if source is not None:
+                    generated = GeneratedPartAnswer(
+                        part_id=part.part_id,
+                        status="supported",
                         answer=answer,
                         evidence_chunk_ids=[
-                            "invented" if self.invalid_chunk_id else chunk.metadata["chunk_id"]
+                            "invented" if self.invalid_chunk_id else source.metadata["chunk_id"]
                         ],
                     )
-        return GeneratedAnswer(supported=False, answer=NOT_FOUND, evidence_chunk_ids=[])
+                    break
+            results.append(generated)
+        return GeneratedAnswer(parts=results)

@@ -1,5 +1,7 @@
 """Public response types and the deliberately smaller generation contract."""
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 NOT_FOUND = "Not found in document"
@@ -16,6 +18,9 @@ class Citation(BaseModel):
 class AnswerResult(BaseModel):
     question: str
     answer: str
+    status: Literal["found", "partial", "not_found"] = Field(
+        description="Model-assessed evidence coverage, not a confidence score or verification."
+    )
     citations: list[Citation]
 
 
@@ -23,8 +28,24 @@ class QAResponse(BaseModel):
     results: list[AnswerResult]
 
 
+class GeneratedPartAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    part_id: str
+    status: Literal["supported", "partial", "not_found"]
+    answer: str = Field(
+        description="Concise prose without chunk IDs, part IDs, or inline citation annotations."
+    )
+    evidence_chunk_ids: list[str]
+
+
 class GeneratedAnswer(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    supported: bool
-    answer: str
-    evidence_chunk_ids: list[str]
+    parts: list[GeneratedPartAnswer]
+
+    @property
+    def supported(self) -> bool:
+        return any(part.status != "not_found" for part in self.parts)
+
+    @property
+    def evidence_chunk_ids(self) -> list[str]:
+        return [chunk_id for part in self.parts for chunk_id in part.evidence_chunk_ids]

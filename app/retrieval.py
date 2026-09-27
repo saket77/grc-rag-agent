@@ -92,6 +92,31 @@ class DocumentIndex:
         self.store = None
 
 
+def merge_retrieval_results(rows: list[list[Document]], k: int) -> list[Document]:
+    """Keep the original top-k, then fairly add derived-query results up to 2k."""
+    if not rows:
+        raise ValueError("At least the original retrieval result is required")
+    limit = 2 * k
+    selected: list[Document] = []
+    seen: set[str] = set()
+
+    def add(document: Document) -> None:
+        chunk_id = document.metadata.get("chunk_id")
+        if not isinstance(chunk_id, str) or not chunk_id:
+            raise RuntimeError("Retrieved source document has no chunk ID")
+        if chunk_id not in seen and len(selected) < limit:
+            selected.append(document)
+            seen.add(chunk_id)
+
+    for document in rows[0][:k]:
+        add(document)
+    for rank in range(k):
+        for row in rows[1:]:
+            if rank < len(row):
+                add(row[rank])
+    return selected
+
+
 class IndexBuilder:
     def __init__(
         self,

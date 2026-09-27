@@ -24,6 +24,9 @@ button:disabled { opacity: .6; cursor: progress; }
 .results-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 32px 0 16px; }
 .results-heading h2 { margin: 0; }
 .answer { margin-bottom: 16px; overflow-wrap: anywhere; }
+.support-status { display: inline-block; padding: 4px 10px; border-radius: 999px; background: #edf0ee; color: #46534b; font-size: .8rem; font-weight: 650; }
+.support-found { background: #e4f2e7; color: #23583f; }
+.support-partial { background: #fff1d6; color: #794d09; }
 .answer-text, blockquote { white-space: pre-wrap; }
 summary { font-size: .875rem; cursor: pointer; font-weight: 600; }
 .source-label { font-size: .75rem; color: #57665f; margin-bottom: 6px; }

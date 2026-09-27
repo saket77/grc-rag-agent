@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     max_chunks: int = Field(default=2000, gt=0)
     max_json_depth: int = Field(default=64, gt=0)
     chunk_size: int = Field(default=1000, gt=0)
-    chunk_overlap: int = Field(default=200, ge=0)
+    chunk_overlap: int = Field(default=400, ge=0)
     retrieval_k: int = Field(default=6, gt=0)
     embedding_batch_size: int = Field(default=64, gt=0, le=256)
     max_provider_calls: int = Field(default=4, gt=0)

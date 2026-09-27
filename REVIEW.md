@@ -1,8 +1,8 @@
 # Backend review and reading plan
 
-Review date: 2026-09-26. This is an implementation review, not an evaluator's score or a claim of production readiness. The original review ran 123 tests. The follow-up adds regression coverage for the defects below, native FAISS batch search, and a minimal upload UI. No live-model answer-quality evaluation has been performed.
+Review date: 2026-09-27. This is an implementation review, not an evaluator's score or a claim of production readiness. The original review ran 123 tests. Follow-up work adds regression coverage for the defects below, native FAISS batch search, deterministic query decomposition, structured partial answers, and a minimal upload UI.
 
-Current verification: **143 tests pass**, and the full Python lint and formatting checks pass. An earlier browser review verified uploads, loading state, generated-result rendering, abstention, and a recoverable 422 error using fake providers. The previously rebuilt container served `/`, `/healthz`, `/docs`, and both UI assets with HTTP 200 as UID 10001 and preserved the high-precision decimal regression. No credentials were included and no live OpenAI calls were made during the current verification.
+Current verification: **156 tests pass**, and the full Python lint and formatting checks pass. A ten-run live evaluation against the supplied five-question SOC 2 fixture produced the same support pattern and citation pages on every run: Q1, Q3, and Q5 answered; Q2 and Q4 abstained. Selected retrieval contexts were stable; one Q1 derived query swapped ranks four and five without changing the selected set. Mean end-to-end time was 12.27 seconds on the review machine. The evaluated 1,000/400 chunking produced 324 chunks and six document-embedding batches, versus 273 chunks and five batches at the prior 1,000/200 setting. Credentials and full-text diagnostic traces were not retained.
 
 ## Bug ledger
 
@@ -16,6 +16,7 @@ Fixed entries retain their original reproduction so a reviewer can understand th
 | B04 | P3 | Fixed: reject unsafe embedding norms | Overflowing/underflowing float32 norm tests |
 | B05 | P2 | Fixed: normalize PDF extraction whitespace | Real-PDF ingestion and endpoint tests verify clean source/citation text before providers |
 | P01 | Improvement | Implemented: native batch search | One-search-call assertion and equivalence to individual retrieval, including fewer-than-k documents |
+| P02 | Improvement | Implemented: deterministic subquery retrieval and partial answers | Structural decomposition/merge tests, strict part validation, and ten-run live behavior matrix |
 | U01 | Requirement | Implemented: minimal upload UI | Static routes tested offline; browser upload success/loading/abstention and validation error verified with fake providers |
 | J01 | Improvement | Open: preserve JSON parent context and expose source paths | Concrete nested-pages reproduction and acceptance criteria in NEXT_STEPS.md |
 | D01 | Maintenance | Open: evaluate FAISS integration migration | The pinned langchain-community integration emits a deprecation warning; current tests pass |
