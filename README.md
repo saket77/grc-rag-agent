@@ -371,3 +371,60 @@ precise-provenance investigation remains an explicitly unapproved design spike i
   thread. Hostile-document isolation would require a process boundary.
 - Mocked tests validate pipeline behavior, not live-model correctness or prompt-injection immunity.
   Live evaluation must distinguish retrieval misses from unsupported generated claims.
+
+## Future improvements
+
+### Registered domain pipeline profiles
+
+A future change could expose two narrow, code-registered extension seams without replacing the
+shared RAG pipeline:
+
+| Extension point | Generic default | Possible domain implementation | Must remain shared |
+| --- | --- | --- | --- |
+| `build_chunks` | Existing PDF/JSON parsing, normalization, and character splitting | A layout-aware or domain-aware builder that may attach separate embedding-only context while preserving source text and page metadata | Upload limits, source-owned citation text, and chunk identity validation |
+| `generation_instructions` | Empty string | Additive domain guidance appended to the existing system prompt | Question schema, evidence-ID contract, one generation call per unique question, and server-side citation resolution |
+
+The first implementation should register only the current behavior so introducing the seam cannot
+change answers:
+
+```python
+PROFILES = {
+    "generic": PipelineProfile(
+        build_chunks=generic_build_chunks,
+        generation_instructions="",
+    ),
+}
+```
+
+The service would resolve an explicitly selected profile, use its builder before document
+embeddings, and append its instructions only when constructing the generation system message.
+Question planning, retrieval, context merging, response validation, and citation construction would
+continue to use the existing implementations. Unknown profiles should fail before any provider
+call.
+
+After that neutral seam is covered by regression tests, a domain profile could be registered
+without forking the orchestration code:
+
+```python
+PROFILES["soc2"] = PipelineProfile(
+    build_chunks=build_soc2_chunks,
+    generation_instructions=SOC2_INSTRUCTIONS,
+)
+```
+
+These profiles could serve as code-installed domain "skills," but they would not constitute a
+dynamic plugin system: profiles would still be trusted application code deployed with the service.
+The defensible architecture claim after implementing the neutral seam would be that the pipeline
+supports registered domain extensions for chunk construction and generation guidance while sharing
+retrieval and provenance enforcement. A specialized profile should ship only if an A/B evaluation
+shows better answer coverage and semantic correctness without extra model calls, citation drift,
+latency-limit violations, or regressions on the generic benchmark.
+
+### Bounded second-pass retrieval
+
+One retrieval experiment to evaluate is a bounded second pass: derive additional queries from the
+first-pass results, embed them together, and run one more native FAISS matrix search. For each
+original question, deduplicate the combined chunks and rerank them using lexical relevance plus
+their FAISS result ranks rather than raw vector distances. Keep at most 50 reranked candidates, then
+select a smaller evidence context for generation. This is not implemented and should be adopted only
+if fixed evaluations show better recall and answer quality at acceptable latency and token cost.
