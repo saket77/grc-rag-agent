@@ -82,4 +82,7 @@ jobs:
           python -c 'import json; assert json.load(open("health.json")) == {"status": "ok"}'
           curl --silent --show-error --fail http://127.0.0.1:8000/openapi.json > openapi.json
           python -c 'import json; paths=json.load(open("openapi.json"))["paths"]; assert {"/healthz", "/qa"} <= set(paths)'
+          for route in / /static/app.js /static/styles.css; do
+            curl --silent --show-error --fail "http://127.0.0.1:8000${route}" >/dev/null
+          done
           docker compose ps

@@ -174,6 +174,31 @@ async def test_partial_status_and_source_owned_citations_reach_the_client():
     ]
 
 
+async def test_mixed_subquestions_return_partial_with_one_generation_call():
+    question = "Which cloud provider? What is the retention policy?"
+    async with api_client() as (client, embeddings, generator):
+        response = await client.post("/qa", files=uploads([question]))
+
+    assert response.status_code == 200, response.text
+    assert response.json()["results"] == [
+        {
+            "question": question,
+            "answer": (
+                "The service is hosted on AWS. "
+                "The provided evidence does not specify: What is the retention policy."
+            ),
+            "status": "partial",
+            "citations": [{"page": None, "excerpt": '{\n  "hosting": "AWS"\n}'}],
+        }
+    ]
+    assert embeddings.batches[1] == [
+        question,
+        "Which cloud provider?",
+        "What is the retention policy?",
+    ]
+    assert len(generator.calls) == 1
+
+
 @pytest.mark.parametrize(
     ("files", "status"),
     [

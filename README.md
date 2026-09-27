@@ -1,86 +1,75 @@
-# Zania document question answering
+# Zania Document QA
 
-A Python 3.12 backend that answers a JSON list of questions from an uploaded PDF or JSON document. It uses LangChain for splitting, embeddings, FAISS retrieval, and structured answer generation. Fully and partially supported answers include source-owned excerpts; unsupported questions return exactly `Not found in document`. Each answer exposes its model-assessed evidence coverage as `found`, `partial`, or `not_found`.
+A document-grounded question-answering service for PDF and JSON uploads. The API accepts a JSON
+array of questions plus one source document, retrieves relevant evidence with OpenAI embeddings and
+FAISS, and uses `gpt-4o-mini` to return structured answers with source-owned citations.
 
-The backend includes a minimal HTML/JavaScript upload client at `/`: select the two files, submit them, and review answers and source excerpts. It runs from the same FastAPI server with no Node build or extra frontend service. Streaming, agent planning, and persistent document storage are deferred. FastAPI's `/docs` remains available for inspecting the API contract.
+The repository includes:
 
-## Run locally
+- a FastAPI backend and minimal upload UI;
+- deterministic question decomposition for explicit multipart questions;
+- batched document/question embeddings and one native FAISS matrix search;
+- `found`, `partial`, and `not_found` coverage states;
+- server-resolved citation text—the model selects chunk IDs, not excerpts or page numbers;
+- bounded uploads, concurrency, provider calls, retries, and request deadlines; and
+- offline tests plus real-HTTP and container smoke tests in CI.
 
-Open **this repository directory** (`zania-assignment/grc-rag-agent`), not just its parent `interview-prep`. On macOS/Linux with Python 3.12 and Make installed:
+## Run with Docker
+
+### Prerequisites
+
+- Docker Desktop or Docker Engine with Compose v2
+- An OpenAI API key with access to `text-embedding-3-small` and `gpt-4o-mini`
+
+### 1. Configure the environment
+
+From the repository root:
 
 ```bash
-make install
-make env
-make doctor
+cp .env.example .env
 ```
 
-`make install` is this repo's equivalent of `npm install`: it creates `.venv` if needed and installs the pinned dependencies there. Every Make command uses `.venv/bin/python` explicitly, so **you do not need to activate the environment**. `make env` preserves an existing `.env`. `make doctor` checks imports and reports whether a key is configured without showing it or making network calls.
+Set `OPENAI_API_KEY` in `.env`. Do not commit the file or pass the key in an upload, screenshot, or
+shell command. Docker Compose loads `.env` only at container runtime; `.dockerignore` prevents it
+from entering the image.
 
-Open `.env` in your editor and set `OPENAI_API_KEY` to the provided key. Do not put the key in source, a request, a screenshot, or a shell command recorded in history. `.env` and local variants are excluded from Git and Docker build context; `.env.example` contains placeholders only. Environment variables take precedence over `.env`. Restart the server after changing `.env`.
-
-```bash
-make dev
-```
-
-Visit [the upload client](http://127.0.0.1:8000/). Select `examples/questions.json` and `examples/document.json`, then choose **Answer questions**. The page shows elapsed time, answers, citations, and the request ID; failed requests display the server's error and allow a retry. Generated content is rendered as text, never inserted as HTML. You can also use [the interactive API docs](http://127.0.0.1:8000/docs): expand `POST /qa`, select **Try it out**, upload the files, and select **Execute**. The UI, `/healthz`, and `/docs` work without an API key; a valid QA request without a configured key receives a clear `503`. With a valid key, executing `/qa` makes billable OpenAI calls. The terminal shows JSON events for ingestion, retrieval, generation, and request completion.
-
-Stop with Ctrl-C. If port 8000 is occupied, use `make dev PORT=8001` and visit port 8001. In another terminal, `make sample` sends the example files (also accepts `PORT=8001`). `make test` exercises the full pipeline offline with deterministic model replacements.
-
-### Docker Compose setup
-
-The repository includes a non-root Python 3.12 image and a Compose service for the shortest repeatable setup:
+### 2. Build and start the service
 
 ```bash
-make env
-# Set OPENAI_API_KEY in .env, then:
 docker compose up --build
 ```
 
-Visit [the upload client](http://127.0.0.1:8000/) or [API docs](http://127.0.0.1:8000/docs). Compose passes `.env` at runtime but does not copy it into the image, binds the API to loopback, and uses the image's `/healthz` health check. Set `PORT=8001 docker compose up --build` to change the host port. Stop with Ctrl-C followed by `docker compose down`. The container can start without `.env` for health/docs checks, but `POST /qa` returns `503` until a key is configured.
+Compose builds a Python 3.12 image, runs the API as a non-root user, binds it to loopback, and uses
+`/healthz` for the container health check.
 
-### Python setup, coming from JavaScript
+### 3. Open the application
 
-| JavaScript concept | This repository |
-| --- | --- |
-| `package.json` dependencies | `pyproject.toml` |
-| Lockfile | `requirements.txt` and `requirements-dev.txt` |
-| Project-local installed packages (`node_modules`) | `.venv`, which also contains its own Python executable |
-| `npm install` | `make install` |
-| `npm run dev` / `npm test` | `make dev` / `make test` |
+- Upload client: [http://127.0.0.1:8000/](http://127.0.0.1:8000/)
+- Interactive API docs: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+- Health check: [http://127.0.0.1:8000/healthz](http://127.0.0.1:8000/healthz)
 
-Python imports belong to the interpreter executing the program. Installing packages into `.venv` does not install them into the global `python3`. If you prefer plain commands, the equivalent setup/run sequence is:
+For a quick UI check, upload `examples/questions.json` and `examples/document.json`. A request to
+`POST /qa` makes billable OpenAI calls. The UI, API docs, and health check work without a key, but
+`POST /qa` returns `503` until one is configured.
+
+To use another host port:
 
 ```bash
-python3.12 -m venv .venv
-.venv/bin/python -m pip install -r requirements-dev.txt
-.venv/bin/python -m uvicorn app.main:app --reload --no-access-log
+PORT=8001 docker compose up --build
 ```
 
-### Missing imports in your editor
+To stop and remove the container and network:
 
-For VS Code (or an editor using its Python extension), open `grc-rag-agent.code-workspace` or this repository folder. The included `.vscode/settings.json` points to the project environment. If imports remain underlined, use **Python: Select Interpreter** and select **`.venv/bin/python` inside this repository**; a previously selected interpreter may override the default. Ensure the Python extension is installed. If you keep the parent folder open, select the nested repository's interpreter explicitly.
-
-`make doctor` is the runtime check: if it succeeds while the editor still reports missing imports, check the editor's interpreter selection and reload its window to refresh the language server. See [VS Code's interpreter selection guidance](https://code.visualstudio.com/docs/python/environments#_select-an-environment) and [Python's virtual environment documentation](https://docs.python.org/3.12/library/venv.html).
-
-For a guided code walkthrough, rubric assessment, and the bug ledger, read [REVIEW.md](REVIEW.md). Remaining improvements are in [NEXT_STEPS.md](docs/NEXT_STEPS.md).
-
-### Which OpenAI models are used?
-
-Both models use the same `OPENAI_API_KEY`, subject to that key's project/model permissions:
-
-| Job | Model | Output |
-| --- | --- | --- |
-| Convert source chunks and questions for similarity search | `text-embedding-3-small` (configurable with `EMBEDDING_MODEL`) | Numerical vectors |
-| Read retrieved text and write the answer | `gpt-4o-mini` (fixed) | Structured part answers and selected chunk IDs |
-
-This interprets the challenge's “gpt-4o-mini only” instruction as applying to answer generation. An embedding model is a separate component needed for semantic retrieval, not a second answer writer. The provided key must permit both calls. See the [OpenAI embeddings guide](https://developers.openai.com/api/docs/guides/embeddings) and [Structured Outputs guide](https://developers.openai.com/api/docs/guides/structured-outputs).
+```bash
+docker compose down
+```
 
 ## API
 
 `POST /qa` accepts exactly two `multipart/form-data` file fields:
 
-- `questions`: `.json` containing a nonempty array of nonblank strings.
-- `document`: `.pdf` containing extractable text, or `.json` containing an object or array.
+- `questions`: a `.json` file containing a nonempty array of nonblank strings;
+- `document`: a `.pdf` with extractable text or a `.json` containing an object or array.
 
 ```bash
 curl --fail-with-body http://127.0.0.1:8000/qa \
@@ -88,9 +77,10 @@ curl --fail-with-body http://127.0.0.1:8000/qa \
   -F 'document=@examples/document.json;type=application/json'
 ```
 
-For PDF, replace the document argument with `-F 'document=@report.pdf;type=application/pdf'`. These are real model calls once a key is configured. The example report is synthetic; its penetration-testing question intentionally has no supporting evidence.
+Replace the document argument with
+`-F 'document=@report.pdf;type=application/pdf'` to query a PDF.
 
-Successful responses use the required `results` shape:
+A successful response preserves the submitted question order:
 
 ```json
 {
@@ -99,91 +89,216 @@ Successful responses use the required `results` shape:
       "question": "Which cloud providers do you rely on?",
       "answer": "The production service is hosted on AWS.",
       "status": "found",
-      "citations": [{"page": null, "excerpt": "The production service is hosted on AWS."}]
+      "citations": [
+        {
+          "page": null,
+          "excerpt": "The production service is hosted on AWS."
+        }
+      ]
     },
     {
       "question": "How frequently do you conduct penetration tests?",
       "answer": "Not found in document",
       "status": "not_found",
       "citations": []
-    },
-    {
-      "question": "Which providers host production and backups?",
-      "answer": "Production uses AWS; the backup provider is not specified.",
-      "status": "partial",
-      "citations": [{"page": null, "excerpt": "The production service is hosted on AWS."}]
     }
   ]
 }
 ```
 
-This is an illustrative subset; a real response includes every submitted question in its original order. Identical question strings reuse the same result. The model selects server-issued chunk IDs and never generates citation text or page numbers. The server resolves each selected ID to the complete source chunk, so an excerpt can be up to the configured chunk size (1,000 characters by default). PDF citations use the physical page position starting at 1, not the printed page label. JSON has no pages, so `page` is `null`; its excerpts refer to deterministic JSON normalization (sorted keys, two-space indentation, Unicode preserved). Decimal values retain their precision through `Decimal` and `simplejson`; numbers remain JSON numbers, not strings. Non-finite values and numbers outside supported numeric ranges are rejected. Named fields with empty lists, nulls, or empty strings are retained as source evidence; a null does not automatically mean "no."
-
-The required per-answer `status` is aggregated from the model's part assessments:
-
-| Answer status | Meaning |
-| --- | --- |
-| `found` | Every question part is fully supported. |
-| `partial` | At least some requested information is supported, but one or more parts are incomplete or unsupported. Citations for the supported content are retained. |
-| `not_found` | No part is supported; the exact fallback and empty citations are returned. |
-
-The upload UI displays this status and its meaning beside each answer. These are model-assessed coverage labels, not confidence scores or an independent guarantee of correctness. Source-ID validation ensures excerpts come from retrieved chunks; users still need to inspect whether those excerpts support the claims. `not_found` describes missing evidence, not a negative answer. The prompt applies the same rule to every document: partial answers must establish some requested information, not merely offer related background.
-
-Every response has an `X-Request-ID` header. Errors are sanitized JSON:
-
-```json
-{"error":{"code":"missing_api_key","message":"Set OPENAI_API_KEY in the environment or local .env file.","request_id":"..."}}
-```
-
 | Status | Meaning |
 | --- | --- |
-| `413` | Byte, question, page, extracted-text, nesting, or chunk limit exceeded |
-| `415` | Unsupported request/file format or conflicting extension and media type |
-| `422` | Malformed uploads, invalid question JSON, corrupt/encrypted/textless PDF, empty source |
-| `502` | Invalid provider response, unknown evidence chunk ID, or rejected upstream request |
-| `503` | Missing/invalid key, unavailable model/provider, rate limiting, or local capacity full |
-| `504` | Provider timeout or whole-request deadline exceeded |
-| `500` | Unexpected internal failure, without exposing exception details |
+| `found` | Every planned part of the question is supported by retrieved evidence. |
+| `partial` | Some requested information is supported, but at least one part is incomplete or missing. |
+| `not_found` | No requested information is supported; the answer is exactly `Not found in document`. |
 
-Request execution is all-or-nothing: provider errors are not represented as unsupported answers or partial request success. A successful question may still contain a grounded partial answer, even when it has only one planned part. Correctly reporting missing evidence is different from a failed model call.
+These states are model-assessed evidence coverage, not confidence scores. The server verifies that
+citations are selected from retrieved source chunks, but that identity check alone does not prove
+that every generated claim is semantically entailed by the cited text.
 
-## Architecture and decisions
+PDF citations use the one-based physical page position. JSON citations have `page: null` and refer
+to deterministic JSON normalization: sorted keys, two-space indentation, preserved Unicode, and
+precise decimal handling. Identical question strings are computed once and restored to their
+original positions in the response.
 
-```text
-POST /qa
-  → bounded upload and validation
-  → page/record extraction → chunks with source metadata
-  → batched embeddings → request-owned in-memory FAISS index
-  → one deterministic question plan → one batched FAISS search
-  → original top-k plus bounded, deduplicated subquery evidence
-  → concurrent gpt-4o-mini structured part answers
-  → server-side chunk-ID resolution → results in original order
+Every response includes an `X-Request-ID` header. Errors use a sanitized JSON envelope:
+
+```json
+{
+  "error": {
+    "code": "missing_api_key",
+    "message": "Set OPENAI_API_KEY in the environment or local .env file.",
+    "request_id": "..."
+  }
+}
 ```
 
-For code review, start at `app/main.py` (the HTTP contract), then `app/services/qa.py` (the complete workflow). The service calls `ingestion`, `retrieval`, and `generation`; `runtime` provides shared resource controls and `middleware` bounds incoming requests. Tests demonstrate the intended behavior at each boundary.
+| HTTP status | Meaning |
+| --- | --- |
+| `413` | A byte, question, page, extracted-text, nesting, or chunk limit was exceeded. |
+| `415` | The request or uploaded file type is unsupported. |
+| `422` | The uploads are malformed, invalid, encrypted, empty, or contain no extractable text. |
+| `502` | The provider response or selected evidence failed validation. |
+| `503` | Configuration is missing, the provider is unavailable, or local capacity is full. |
+| `504` | A provider or whole-request deadline was exceeded. |
+| `500` | An unexpected failure occurred; internal exception details are not exposed. |
 
-```text
-app/
-  main.py       # HTTP entry point; the only file at this level
-  services/     # QA orchestration
-  rag/          # Ingestion, question planning, retrieval, generation, prompts
-  core/         # Configuration, errors, middleware, runtime, observability
-  schemas/      # Public responses and internal generated-answer types
-  static/       # Upload UI
+The request is all-or-nothing: a provider failure is not converted into `not_found`, and one failed
+generation task cancels its sibling tasks.
+
+## Architecture
+
+### Request lifecycle
+
+```mermaid
+flowchart TD
+    U["Upload questions.json + PDF/JSON"] --> H["FastAPI /qa<br/>app/main.py"]
+    H --> G{"Request allowed?<br/>type · size · capacity · deadline"}
+    G -- No --> E["Sanitized error<br/>with X-Request-ID"]
+    G -- Yes --> I["Parse and normalize source<br/>app/rag/ingestion.py"]
+    I --> V{"Valid extractable content?"}
+    V -- No --> E
+    V -- Yes --> C["Page/record chunks<br/>source metadata + chunk IDs"]
+    C --> D["Batch document embeddings<br/>request-owned FAISS index"]
+    U --> P["Deterministic question plan<br/>app/rag/planning.py"]
+    P --> Q["Batch unique query embeddings"]
+    D --> R["One native matrix search<br/>app/rag/retrieval.py"]
+    Q --> R
+    R --> M["Merge original top-k +<br/>bounded part-query evidence"]
+    M --> A["Concurrent structured answers<br/>gpt-4o-mini"]
+    P --> A
+    A --> X{"Exact parts and valid<br/>evidence chunk IDs?"}
+    X -- No --> E
+    X -- Yes --> S["Server resolves source excerpts<br/>app/rag/generation.py"]
+    S --> O["Ordered QAResponse<br/>found · partial · not_found"]
+
+    classDef input fill:#f4f8d7,stroke:#91ad21,color:#283000;
+    classDef process fill:#eef7ff,stroke:#1683d8,color:#10263a;
+    classDef decision fill:#faf0ff,stroke:#8a55b5,color:#392447;
+    classDef output fill:#f4f8d7,stroke:#91ad21,color:#283000;
+    class U input;
+    class H,I,C,D,P,Q,R,M,A,S process;
+    class G,V,X decision;
+    class E,O output;
 ```
 
-`app` is a namespace package; its Python subpackages have `__init__.py` files.
+The orchestration sequence is intentionally explicit:
 
-- **Question parts are a shared contract:** retrieval always precedes generation. No model decides how to decompose or search, and no planner, grader, or subagent adds model calls. One deterministic plan supplies the exact question parts to both retrieval and structured generation, so evidence is searched for every explicit `?` clause or numbered choice instead of relying on one broad embedding to represent a multipart question. Dependent directives such as “If yes, describe” remain attached to the original question. Duplicate original questions and derived queries are computed once, while response order and one result per submitted question are preserved. One normal generation call is made per unique original question; only transient provider failures can cause one retry.
-- **Native multi-question FAISS search:** a normalized vector index and LangChain document store are built once per request and reused for all questions. Embeddings may use several bounded provider batches, but all resulting unique question-part vectors are passed as one matrix to one `store.index.search(matrix, k)` call. FAISS returns one result row per query in the same order; the following Python loop only maps integer positions to documents and does not perform more similarity searches. Each final context keeps the original question's top `k`, then adds unique part-query results round-robin up to `2k`. Missing neighbors (`-1`) are skipped. This batching reduces repeated Python/native boundary overhead without changing per-question ranking semantics. Similarity uses L2 distance on normalized vectors, which has the same ranking as cosine similarity; changing FAISS index type would not improve semantic recall for this exact search.
-- **Extraction and chunking:** PDF extractor whitespace is normalized to one space before limits, chunking, embeddings, generation, and citation display. Recursive character splitting starts at 1,000 characters with 400-character target overlap; the larger measured overlap keeps nearby section headings with continuation evidence. Chunks cannot cross PDF pages or JSON records and retain character offsets into the normalized source representation. A root JSON object is one record, while top-level array items are separate records. Nested arrays such as `pages` are not yet recognized as record boundaries. See [NEXT_STEPS.md](docs/NEXT_STEPS.md) for the remaining JSON-context work.
-- **Grounding and partial answers:** each generation call gets a strict response schema whose `parts` object requires exactly the IDs in its question plan, with no extra keys. Each value contains `status` (`supported`, `partial`, or `not_found`), `answer`, and `evidence_chunk_ids`. The server normalizes these keyed results into plan order, validates the part set and IDs, resolves citations from source-owned chunks, and preserves grounded partial answers regardless of part count. Generic input/output examples in `app/rag/prompts.py` illustrate full support, partial support, missing evidence, and unsupported inferences. A partial answer must address the requested property and identify what remains unspecified; merely related facts do not answer it. When every part is `not_found`, the server returns the exact fallback with no citations. Numbered options retain display-only labels for concise missing-part messages; retrieval and generation still use the same full question text. The prompt and answer-field description restrict internal IDs to the structured evidence field. The public API and number of model calls are unchanged. Schema validation establishes response shape and source identity, not semantic correctness or guaranteed prose compliance.
-- **Concurrency:** async provider I/O shares a process-wide semaphore; document and question embeddings are batched. Synchronous extraction, splitting, and FAISS work run in a bounded thread pool. On one generation failure, sibling generation tasks are cancelled. Results retain input order.
-- **Privacy:** the service does not persist uploads or indexes. The multipart parser may temporarily spool large uploads to disk; handles close after success/failure. The total request body is buffered in memory only after enforcing its byte limit during receipt. LangSmith tracing is disabled for the pipeline, and logs contain operational metadata rather than report contents, questions, answers, filenames, or credentials. Document text is still sent to OpenAI for embeddings and retrieved passages for generation.
+1. `RequestGuard` assigns a request ID, admits bounded work, buffers no more than the configured
+   request limit, and applies the end-to-end deadline.
+2. PDF pages or JSON records are normalized and split without crossing their source boundary.
+3. The service embeds document chunks once and creates an in-memory FAISS index owned by that
+   request.
+4. A deterministic planner extracts only explicit question clauses or numbered choices. The same
+   plan drives retrieval and the answer schema.
+5. All unique query vectors are searched in one `store.index.search(matrix, k)` call. Each question
+   keeps its original top `k`, then receives deduplicated part-query results up to `2k`.
+6. One structured generation call runs per unique original question. Calls may run concurrently,
+   while a process-wide semaphore bounds total provider work.
+7. The server validates the exact part set and selected chunk IDs, resolves citations from its own
+   chunks, and restores duplicate questions and original order.
 
-### Configurable limits
+### Source-file responsibilities
 
-Settings live in `app/core/config.py`; all are environment-configurable except the fixed answer model. `.env.example` lists them. Limits must be positive, and chunk overlap must be smaller than chunk size.
+Every runtime source file is represented below. Arrows show the main dependency and control flow;
+the `__init__.py` files are package markers only.
+
+```mermaid
+flowchart LR
+    subgraph HTTP["HTTP and UI"]
+        MAIN["app/main.py<br/>routes, uploads, dependency wiring"]
+        HTML["app/static/index.html<br/>upload page structure"]
+        JS["app/static/app.js<br/>submit, render, retry states"]
+        CSS["app/static/styles.css<br/>UI presentation"]
+    end
+
+    subgraph SERVICE["Application service"]
+        QA["app/services/qa.py<br/>end-to-end orchestration"]
+        SINIT["app/services/__init__.py<br/>package marker"]
+    end
+
+    subgraph RAG["RAG domain"]
+        INGEST["app/rag/ingestion.py<br/>validate, parse, normalize, chunk"]
+        PLAN["app/rag/planning.py<br/>deterministic question parts"]
+        RETRIEVE["app/rag/retrieval.py<br/>embeddings, FAISS, context merge"]
+        GENERATE["app/rag/generation.py<br/>structured output + citation validation"]
+        PROMPTS["app/rag/prompts.py<br/>grounding rules + examples"]
+        RINIT["app/rag/__init__.py<br/>package marker"]
+    end
+
+    subgraph CORE["Operational boundaries"]
+        CONFIG["app/core/config.py<br/>validated settings and limits"]
+        ERRORS["app/core/errors.py<br/>safe service errors"]
+        GUARD["app/core/middleware.py<br/>admission, body limit, deadline"]
+        LOGS["app/core/observability.py<br/>allowlisted JSON logging"]
+        RUNTIME["app/core/runtime.py<br/>provider retries + worker pool"]
+        CINIT["app/core/__init__.py<br/>package marker"]
+    end
+
+    subgraph SCHEMA["Contracts"]
+        MODELS["app/schemas/qa.py<br/>public and generated models"]
+        SCHINIT["app/schemas/__init__.py<br/>package marker"]
+    end
+
+    MAIN --> QA
+    MAIN --> GUARD
+    MAIN --> MODELS
+    MAIN --> HTML
+    HTML --> JS
+    HTML --> CSS
+    QA --> INGEST
+    QA --> PLAN
+    QA --> RETRIEVE
+    QA --> GENERATE
+    QA --> RUNTIME
+    QA --> CONFIG
+    GENERATE --> PROMPTS
+    GENERATE --> MODELS
+    GENERATE --> PLAN
+    RETRIEVE --> RUNTIME
+    INGEST --> CONFIG
+    GUARD --> ERRORS
+    GUARD --> LOGS
+    RUNTIME --> ERRORS
+```
+
+Supporting files are separated by purpose:
+
+| Area | Files | Responsibility |
+| --- | --- | --- |
+| Containers | `Dockerfile`, `compose.yaml`, `.dockerignore` | Build and run the non-root production image without copying local secrets. |
+| Python project | `pyproject.toml`, `requirements.txt`, `requirements-dev.txt` | Package metadata, compatible dependency ranges, and pinned runtime/development locks. |
+| Local tooling | `Makefile`, `.env.example`, `scripts/doctor.py`, `scripts/benchmark_retrieval.py` | Optional local development checks, configuration template, diagnostics, and retrieval benchmark. |
+| CI | `.github/workflows/ci.yml`, `.github/ci/e2e.sh`, `.github/ci/e2e_app.py` | Lint, tests, package build, real-HTTP deterministic-provider test, and container smoke test. |
+| Tests | `tests/__init__.py`, `tests/conftest.py`, `tests/fakes.py`, `tests/pdf_factory.py`, `tests/test_*.py` | Mark the test package, block external sockets, provide deterministic providers/fixtures, and verify each boundary offline. |
+| Examples | `examples/questions.json`, `examples/document.json`, `examples/appendix-questions.json`, `examples/Nave-SOC2-Type-2-Report.pdf` | Small synthetic demo plus the supplied SOC 2 evaluation fixture. |
+| Review notes | `REVIEW.md`, `docs/NEXT_STEPS.md`, `docs/DESIRED_FEATURES.md` | Guided code review, measured follow-up work, and the unapproved JSON provenance design spike. |
+| Repository/editor | `.gitignore`, `.vscode/settings.json`, `.vscode/extensions.json`, `grc-rag-agent.code-workspace` | Exclude local artifacts and provide optional editor defaults. |
+
+### Architectural decisions
+
+| Decision | Why it was chosen | Tradeoff |
+| --- | --- | --- |
+| Request-owned in-memory FAISS index | Keeps uploaded documents isolated, avoids persistence, and makes cleanup unambiguous. | Re-uploading the same document rebuilds embeddings and the index. |
+| Deterministic question planning | Retrieval and generation share the same explicit part contract without an extra planner-model call. | The conservative parser handles explicit clauses/numbered items, not arbitrary linguistic decomposition. |
+| Native batched FAISS search | All unique question/part vectors cross the Python/native boundary in one matrix search while preserving per-query ranking. | The measured speedup is retrieval-only; provider latency still dominates end-to-end time. |
+| Structured generation per unique question | Exact part keys make missing/extra answers rejectable while isolating contexts and retries by question. | Several questions require several generation calls; they are bounded and concurrent rather than combined into one large prompt. |
+| Model selects chunk IDs; server owns citation text | Prevents the model from inventing or reformatting quotes and page numbers. | Valid source identity is not the same as semantic entailment, so answer quality still needs evaluation. |
+| Normalize PDF extractor whitespace before chunking | Prevents positioned-word newlines from polluting retrieval, model context, and displayed citations. | Words and punctuation are preserved, but table columns and visual layout are not reconstructed. |
+| Bounded async I/O plus bounded worker threads | Provider calls stay concurrent while parsing, splitting, and FAISS work cannot exhaust the event loop or CPU pool. | Cancelled native/thread work cannot be forcibly stopped; limits reduce risk but are not hard process isolation. |
+| No durable app persistence, LangSmith tracing, or content logging | Minimizes retention of compliance documents and keeps operational logs safe to inspect. | Multipart handling may spool uploads temporarily; OpenAI still receives chunk text for embeddings and retrieved evidence for generation. |
+
+## Models and configuration
+
+| Job | Model | Output |
+| --- | --- | --- |
+| Embed document chunks and retrieval queries | `text-embedding-3-small` by default; configurable with `EMBEDDING_MODEL` | Numeric vectors |
+| Generate structured part answers and select evidence IDs | `gpt-4o-mini`; fixed in code | Structured answer fields and chunk IDs |
+
+The answer-model restriction applies to answer generation; the embedding model performs semantic
+retrieval and does not write answers.
+
+Settings are validated in `app/core/config.py` and listed in `.env.example`:
 
 | Setting | Default |
 | --- | --- |
@@ -200,49 +315,59 @@ Settings live in `app/core/config.py`; all are environment-configurable except t
 | `REQUEST_TIMEOUT_SECONDS` / `PROVIDER_TIMEOUT_SECONDS` | 120 / 30 seconds |
 | `MAX_ANSWER_TOKENS` | 1,200 |
 
-The request deadline includes upload receipt, multipart parsing, queueing, retries, and generation. A transient connection, rate-limit, or upstream server failure gets at most one retry with a short backoff; timeouts and invalid generated outputs are not retried. Native SDK retries are disabled so they cannot multiply retries.
+A transient connection, rate-limit, or upstream server failure receives at most one retry with a
+short backoff. Timeouts and invalid generated outputs are not retried, preventing hidden duplicate
+costs. Native SDK retries are disabled.
 
-Application events are JSON logs with a generated request ID, stage timings, counts, status, and generation token usage when supplied. Uvicorn startup/shutdown messages remain ordinary server logs; access logs are disabled by the documented commands. External parser/provider logging is suppressed to avoid accidentally logging source material.
+## Validation
 
-### Limits of this first pass
-
-- PDF extraction has no OCR or specialized table/layout reconstruction. Whitespace normalization makes positioned text readable but does not reconstruct table columns, and page-local splitting may lose relationships that span pages. JSON records split into several chunks may also lose distant context.
-- No authentication or durable tenancy model is implemented. Run locally for the challenge; a public deployment needs appropriate access controls and service-wide resource management. Limits are per worker process, so multiple Uvicorn workers multiply them.
-- A Python thread cannot be forcibly stopped. Cancelling an HTTP request leaves already-running parsing/index work alive until it completes; its worker slot stays occupied, and no native index is reset while a worker might read it. Byte/page/text limits help bound ordinary workloads but do not provide hard CPU/memory isolation for hostile PDFs. Process isolation is a future hardening step.
-- Mocked tests establish pipeline behavior, not live-model answer quality or perfect resistance to prompt injection. Evaluate real sample questions for retrieval recall, faithful answers, correct abstention, citation accuracy, latency, and cost before claiming production quality.
-- Re-uploading a document rebuilds its index. A future in-process cache should use a key of `(document SHA-256, embedding model, ingestion/chunking version and settings)`, bounded memory/LRU eviction, TTL, duplicate-build prevention, and access/tenant isolation. Index construction is separated in `IndexBuilder` so this can be added without changing `/qa`.
-
-## Tests and containers
+For local development with Python 3.12:
 
 ```bash
-make test
+make install
 make check
+make test
 ```
 
-Tests use synthetic PDF/JSON inputs, deterministic fake embeddings, and mocked generation. Endpoint tests still run real ingestion, chunking, FAISS search, question decomposition, context merging, part validation, and citation resolution. The test fixture blocks external socket connections, and no live API key is required. Coverage includes malformed input, resource limits, partial answers, abstention, invalid citations, provider errors, timeouts, ordering, duplicate questions, concurrency, and request isolation.
+Tests use deterministic embeddings and generation replacements; no key or billable call is needed.
+Endpoint tests still execute real parsing, chunking, FAISS indexing/search, question planning,
+context merging, response validation, and citation resolution. External sockets are blocked by the
+test fixture.
 
-GitHub Actions adds a real-HTTP end-to-end boundary: it starts Uvicorn, calls the actual `/healthz`, `/openapi.json`, and multipart `/qa` endpoints with `curl`, and runs the production ingestion, planning, indexing, batched FAISS retrieval, validation, middleware, and serialization path. Only embeddings and answer generation are dependency-injected deterministic providers, so CI needs no credentials and cannot make billable model calls. The check also requires JSON stage events with latency fields and verifies that the sample's three question embeddings are sent as one provider batch. A separate job validates Compose, builds the production image, and smoke-tests its health and OpenAPI endpoints.
+CI additionally:
 
-To reproduce the offline retrieval comparison:
+- starts the real HTTP server and exercises `/healthz`, `/openapi.json`, and multipart `/qa`;
+- verifies JSON stage events and one batched question-embedding call;
+- builds the Python package; and
+- validates Compose, builds the production image, and smoke-tests its health and OpenAPI routes.
+
+The retrieval microbenchmark can be reproduced after installing development dependencies:
 
 ```bash
 .venv/bin/python -m scripts.benchmark_retrieval
 ```
 
-On the local review machine, 2,000 synthetic document vectors, 50 question vectors, 1,536 dimensions, one native thread, and 15 repetitions measured median retrieval time of **19.565 ms** for 50 repeated searches and **16.320 ms** for one matrix search (**1.20×**). The script first verifies identical per-question documents and ordering. This isolates FAISS retrieval and Python/native call overhead; ingestion, embedding, question planning, context merging, and generation are excluded, so it is not an end-to-end latency claim. Results vary by machine and workload. FAISS documents [multi-vector search](https://github.com/facebookresearch/faiss/wiki) as a supported optimization.
+With 2,000 synthetic document vectors, 50 question vectors, 1,536 dimensions, one native thread,
+and 15 repetitions, local review runs have measured **1.20×–1.41×** faster retrieval. The latest
+validation run measured a median **37.520 ms** for repeated single-vector searches and **26.587 ms**
+for one matrix search (**1.41×**) with identical documents and ordering. This isolates FAISS
+retrieval and Python/native boundary overhead; it does not include ingestion, embeddings, planning,
+context merging, or generation, and results vary by machine and workload.
 
-For a direct Docker run without Compose:
+For the full implementation review, live-evaluation notes, and bug ledger, see [REVIEW.md](REVIEW.md).
+Measured follow-up work is tracked in [docs/NEXT_STEPS.md](docs/NEXT_STEPS.md); the JSON chunking and
+precise-provenance investigation remains an explicitly unapproved design spike in
+[docs/DESIRED_FEATURES.md](docs/DESIRED_FEATURES.md).
 
-```bash
-docker build -t zania-grc-rag:local .
-docker run --rm --env-file .env -p 127.0.0.1:8000:8000 zania-grc-rag:local
-```
+## Current limitations
 
-The container uses Python 3.12, runs as a non-root user, and includes a `/healthz` health check. The image contains neither `.env` nor uploaded documents. For a credential-free container smoke test, omit `--env-file .env`; health and API docs remain available.
-
-`requirements.txt` and `requirements-dev.txt` pin runtime and test dependencies. Use the lockfiles for normal installs; `pyproject.toml` declares compatible development ranges. To deliberately refresh the locks:
-
-```bash
-pip-compile --strip-extras --no-emit-index-url -o requirements.txt pyproject.toml
-pip-compile --strip-extras --no-emit-index-url -c requirements.txt --extra dev -o requirements-dev.txt pyproject.toml
-```
+- PDF ingestion has no OCR or specialized table/layout reconstruction. Page-local chunks may miss
+  relationships that span pages.
+- Root JSON array items become separate records, but nested arrays such as `pages` are not yet
+  inferred as record boundaries. JSON citations are still coarse chunk excerpts with `page: null`.
+- There is no authentication, durable tenancy, persistent vector store, or cross-request cache.
+- Limits are per process. Multiple Uvicorn workers multiply concurrency and memory limits.
+- Cancelling a request cannot forcibly stop already-running parser or native-index work in a Python
+  thread. Hostile-document isolation would require a process boundary.
+- Mocked tests validate pipeline behavior, not live-model correctness or prompt-injection immunity.
+  Live evaluation must distinguish retrieval misses from unsupported generated claims.

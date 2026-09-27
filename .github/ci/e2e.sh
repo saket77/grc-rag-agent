@@ -42,6 +42,7 @@ server_pid=$!
 
 ready=""
 for _ in {1..60}; do
+  kill -0 "$server_pid" 2>/dev/null || break
   if curl --silent --show-error --fail \
     "http://127.0.0.1:${port}/healthz" >"$artifacts/health.json" 2>/dev/null; then
     ready="yes"
@@ -55,11 +56,22 @@ curl --silent --show-error --fail \
   "http://127.0.0.1:${port}/openapi.json" \
   >"$artifacts/openapi.json"
 
+for route in / /static/app.js /static/styles.css; do
+  curl --silent --show-error --fail "http://127.0.0.1:${port}${route}" >/dev/null
+done
+
 curl --silent --show-error --fail-with-body \
   --dump-header "$artifacts/headers.txt" \
   --output "$artifacts/response.json" \
   "http://127.0.0.1:${port}/qa" \
   -F 'questions=@examples/questions.json;type=application/json' \
+  -F 'document=@examples/document.json;type=application/json'
+
+curl --silent --show-error --fail-with-body \
+  --dump-header "$artifacts/partial-headers.txt" \
+  --output "$artifacts/partial-response.json" \
+  "http://127.0.0.1:${port}/qa" \
+  -F 'questions=@.github/ci/partial-questions.json;type=application/json' \
   -F 'document=@examples/document.json;type=application/json'
 
 kill -INT "$server_pid"
@@ -71,23 +83,35 @@ server_pid=""
   "$artifacts/openapi.json" \
   "$artifacts/headers.txt" \
   "$artifacts/response.json" \
+  "$artifacts/partial-headers.txt" \
+  "$artifacts/partial-response.json" \
   "$artifacts/server.log" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-health_path, openapi_path, headers_path, response_path, log_path = map(Path, sys.argv[1:])
+(
+    health_path, openapi_path, headers_path, response_path,
+    partial_headers_path, partial_response_path, log_path,
+) = map(Path, sys.argv[1:])
 
 assert json.loads(health_path.read_text()) == {"status": "ok"}
 paths = json.loads(openapi_path.read_text())["paths"]
 assert {"/healthz", "/qa"} <= set(paths)
 
-headers = {}
-for line in headers_path.read_text().splitlines():
-    if ":" in line:
-        name, value = line.split(":", 1)
-        headers[name.lower()] = value.strip()
-assert headers.get("x-request-id")
+def request_id(path):
+    headers = {}
+    for line in path.read_text().splitlines():
+        if ":" in line:
+            name, value = line.split(":", 1)
+            headers[name.lower()] = value.strip()
+    assert headers.get("x-request-id")
+    return headers["x-request-id"]
+
+
+sample_request_id = request_id(headers_path)
+partial_request_id = request_id(partial_headers_path)
+assert sample_request_id != partial_request_id
 
 payload = json.loads(response_path.read_text())
 results = payload["results"]
@@ -105,13 +129,29 @@ assert results[1]["citations"] == []
 assert results[2]["answer"] == "Not found in document"
 assert results[2]["citations"] == []
 
+partial_results = json.loads(partial_response_path.read_text())["results"]
+assert len(partial_results) == 1
+partial = partial_results[0]
+assert partial["question"] == "Which cloud provider? What is the retention policy?"
+assert partial["status"] == "partial"
+assert partial["answer"] == (
+    "The service is hosted on AWS. "
+    "The provided evidence does not specify: What is the retention policy."
+)
+assert partial["citations"] == results[0]["citations"]
+assert "chunk_" not in partial["answer"] and "part_" not in partial["answer"]
+
 events = []
 for line in log_path.read_text().splitlines():
     if line.startswith("{"):
         events.append(json.loads(line))
 
 required = {"ingestion_complete", "index_complete", "retrieval_complete", "generation_complete"}
-assert required <= {event.get("event") for event in events}
+for expected_request_id in (sample_request_id, partial_request_id):
+    assert required <= {
+        event.get("event") for event in events
+        if event.get("request_id") == expected_request_id
+    }
 for event in events:
     if event.get("event") in required | {"request_complete"}:
         assert isinstance(event.get("duration_ms"), (int, float))
@@ -123,8 +163,20 @@ question_embedding_calls = [
     if event.get("event") == "provider_call_started"
     and event.get("operation") == "question_embedding"
 ]
-assert len(question_embedding_calls) == 1
-assert question_embedding_calls[0]["item_count"] == 3
+for expected_request_id in (sample_request_id, partial_request_id):
+    calls = [event for event in question_embedding_calls
+             if event.get("request_id") == expected_request_id]
+    assert len(calls) == 1
+    # Three original questions, or one original question plus its two explicit parts.
+    assert calls[0]["item_count"] == 3
+
+partial_generation_calls = [
+    event for event in events
+    if event.get("request_id") == partial_request_id
+    and event.get("event") == "provider_call_started"
+    and event.get("operation") == "answer_generation"
+]
+assert len(partial_generation_calls) == 1
 PY
 
 printf '%s\n' "Real-HTTP end-to-end test passed with deterministic providers."
