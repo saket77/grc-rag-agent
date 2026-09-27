@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import threading
 
 import httpx
@@ -24,6 +25,27 @@ async def test_provider_calls_share_concurrency_limit():
 
     assert await asyncio.gather(*(runner.call(operation) for _ in range(8))) == [1] * 8
     assert peak == 2
+
+
+async def test_provider_call_lifecycle_logs_safe_metadata(caplog):
+    runner = ProviderRunner(Settings(_env_file=None))
+
+    with caplog.at_level(logging.INFO, logger="app"):
+        result = await runner.call(
+            lambda: asyncio.sleep(0, result="private result"),
+            operation="document_embedding",
+            batch_number=2,
+            item_count=64,
+        )
+
+    assert result == "private result"
+    started = next(record for record in caplog.records if record.msg == "provider_call_started")
+    completed = next(record for record in caplog.records if record.msg == "provider_call_complete")
+    assert started.operation == completed.operation == "document_embedding"
+    assert started.batch_number == completed.batch_number == 2
+    assert started.item_count == completed.item_count == 64
+    assert completed.duration_ms >= 0
+    assert "private result" not in caplog.text
 
 
 async def test_transient_failure_retries_exactly_once():

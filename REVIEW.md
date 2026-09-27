@@ -2,7 +2,7 @@
 
 Review date: 2026-09-26. This is an implementation review, not an evaluator's score or a claim of production readiness. The original review ran 123 tests. The follow-up adds regression coverage for the defects below, native FAISS batch search, and a minimal upload UI. No live-model answer-quality evaluation has been performed.
 
-Follow-up verification: **145 tests pass**. Modified Python files pass lint and formatting; JavaScript passes Node's syntax check. A real browser verified uploads, loading state, generated-result rendering, abstention, and a recoverable 422 error using fake providers. The rebuilt container serves `/`, `/healthz`, `/docs`, and both UI assets with HTTP 200 as UID 10001, and preserves the high-precision decimal regression. No credentials were included and no live OpenAI calls were made. Full-project lint currently flags the pre-existing long JSON-citation TODO in `app/models.py`; that note was preserved.
+Current verification: **143 tests pass**, and the full Python lint and formatting checks pass. An earlier browser review verified uploads, loading state, generated-result rendering, abstention, and a recoverable 422 error using fake providers. The previously rebuilt container served `/`, `/healthz`, `/docs`, and both UI assets with HTTP 200 as UID 10001 and preserved the high-precision decimal regression. No credentials were included and no live OpenAI calls were made during the current verification.
 
 ## Bug ledger
 
@@ -14,6 +14,7 @@ Fixed entries retain their original reproduction so a reviewer can understand th
 | B02 | P2 | Fixed: preserve meaningful empty fields | Root-object and array-record tests with empty list/object, null, empty string, false, and zero |
 | B03 | P3 | Fixed: preserve decimal values | Decimal/exponent/underflow tests verify numeric round trips; unsupported numbers fail clearly |
 | B04 | P3 | Fixed: reject unsafe embedding norms | Overflowing/underflowing float32 norm tests |
+| B05 | P2 | Fixed: normalize PDF extraction whitespace | Real-PDF ingestion and endpoint tests verify clean source/citation text before providers |
 | P01 | Improvement | Implemented: native batch search | One-search-call assertion and equivalence to individual retrieval, including fewer-than-k documents |
 | U01 | Requirement | Implemented: minimal upload UI | Static routes tested offline; browser upload success/loading/abstention and validation error verified with fake providers |
 | J01 | Improvement | Open: preserve JSON parent context and expose source paths | Concrete nested-pages reproduction and acceptance criteria in NEXT_STEPS.md |
@@ -47,6 +48,14 @@ Implemented: parse decimal literals as `Decimal` and serialize them with pinned 
 
 Before the fix, `checked_vectors` accepted finite elements whose float32 norm overflowed, such as `[1e38, 1e38]`; FAISS normalization then produced a zero vector. Non-finite and zero norms are now rejected before indexing or searching, including underflow. Healthy OpenAI embeddings are not expected to have these scales.
 
+### B05 — Fixed: normalize PDF extraction whitespace
+
+Location: `app/ingestion.py`, `_normalize_pdf_text` and `_parse_pdf`.
+
+Before the fix, `pypdf` treated individually positioned words in the sample SOC 2 tables as separate lines. Those extraction artifacts entered chunking, embeddings, model context, and server-resolved citations. The frontend's `white-space: pre-wrap` then displayed nearly every word on its own line, but the raw `/qa` JSON confirmed that the source of the defect was ingestion rather than rendering.
+
+Implemented: collapse PDF extractor whitespace to one canonical space before counting extracted characters and creating page documents. Page metadata and source words remain intact; visual PDF layout is not reconstructed. Tests cover normalized ingestion and the final endpoint citation.
+
 ## Challenge assessment
 
 | Rubric area | Evidence in this implementation | Remaining work / caveat |
@@ -57,7 +66,7 @@ Before the fix, `checked_vectors` accepted finite elements whose float32 norm ov
 | Tests — 15 | Offline tests; endpoint tests use real parsing/splitting/FAISS/citation checks and fake providers, with review regressions | Mocks do not establish answer quality |
 | Performance — 15 | One request-owned index, batched embeddings and native FAISS search, duplicate reuse, bounded calls; reproducible retrieval benchmark | No cross-request cache; retrieval microbenchmark excludes provider latency |
 | Container + observability — 10 | Non-root Docker image, health check, secret exclusions, JSON stage/request logs | Prior implementation smoke test passed; no public deployment or load benchmark |
-| Grounding — 10 | Fixed `gpt-4o-mini`, retrieved text, strict schema, exact quote/ID checks, abstention | Quote validity is not semantic entailment; run live-model evaluation after configuring the key |
+| Grounding — 10 | Fixed `gpt-4o-mini`, retrieved text, strict schema, server-resolved chunk-ID citations, abstention | Selected source identity is not semantic entailment; run live-model evaluation after configuring the key |
 | Minimal frontend — 5 | `/` uploads both files, displays answers/citations/errors and request IDs; `/docs` remains available | Browser flow tested with fake providers; live-model smoke remains pending |
 
 FAISS is the selected vector store. It lives in this Python process alongside the chunk text/metadata; the requirement does not imply a separate database server. The implementation uses LangChain splitting, embedding/generation integrations, and its FAISS wrapper. `text-embedding-3-small` supplies vectors; only `gpt-4o-mini` writes answers, under the model-restriction interpretation documented in the README.
@@ -69,7 +78,7 @@ FAISS is the selected vector store. It lives in this Python process alongside th
 3. **`app/service.py`.** Read `answer` as the overall recipe. Note where the document is processed once, questions are deduplicated, work is concurrent, and original ordering is restored.
 4. **`app/ingestion.py` with `tests/test_ingestion.py`.** Bytes become page/record text, then chunks with IDs and source locations. Review the three JSON fixes alongside their regression tests, then examine the nested-pages improvement in NEXT_STEPS.md.
 5. **`app/retrieval.py` with `tests/test_retrieval.py`.** Text becomes vectors; FAISS ranks chunks; retrieved chunks still contain their text. Read `IndexBuilder`, then `DocumentIndex.search`. The answer model never receives the vector coordinates.
-6. **`app/generation.py` with `tests/test_generation.py`.** Review the prompt, structured output, unsupported-answer handling, and citation checks. Ask whether the quoted evidence supports the entire answer, not just whether the quote exists.
+6. **`app/generation.py` with `tests/test_generation.py`.** Review the prompt, structured output, unsupported-answer handling, and chunk-ID citation resolution. Ask whether each selected source chunk supports the entire answer, not just whether the ID exists.
 7. **`app/runtime.py`, `app/middleware.py`, `app/config.py`, and `app/observability.py`.** These are operational boundaries: simultaneous calls/requests, deadlines, safe logs, and input limits. Their tests explain why cancellation and resource ownership are more careful than a small prototype.
 
 Do not start by reading every dependency import or all concurrency plumbing. Trace the ordinary JSON request first, then the failure paths.

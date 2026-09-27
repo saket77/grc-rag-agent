@@ -165,6 +165,17 @@ def _parse_json_document(data: bytes, settings: Settings) -> list[Document]:
     return documents
 
 
+def _normalize_pdf_text(text: str) -> str:
+    """Collapse extractor-produced whitespace while preserving source words and punctuation.
+
+    PDF text operators often position each word independently. ``pypdf`` can therefore return
+    visually adjacent words separated by newlines (and, for some table-heavy reports, blank
+    lines). Those layout artifacts are harmful to chunking and embeddings and are not reliable
+    paragraph boundaries, so PDF source text uses one canonical space between tokens.
+    """
+    return " ".join(text.split())
+
+
 def _parse_pdf(data: bytes, settings: Settings) -> list[Document]:
     if not data.startswith(b"%PDF-"):
         raise ServiceError(422, "invalid_pdf", "The uploaded file is not a valid PDF.")
@@ -177,11 +188,11 @@ def _parse_pdf(data: bytes, settings: Settings) -> list[Document]:
         documents = []
         total_chars = 0
         for number, page in enumerate(reader.pages, start=1):
-            text = page.extract_text() or ""
+            text = _normalize_pdf_text(page.extract_text() or "")
             total_chars += len(text)
             if total_chars > settings.max_extracted_chars:
                 raise ServiceError(413, "document_too_long", "Extracted text exceeds the limit.")
-            if text.strip():
+            if text:
                 documents.append(Document(page_content=text, metadata={"page": number}))
     except ServiceError:
         raise

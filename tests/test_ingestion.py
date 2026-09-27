@@ -77,6 +77,14 @@ def test_pdf_preserves_physical_pages_and_skips_blank_pages(settings):
     assert "Hosted on AWS." in documents[0].page_content
 
 
+def test_pdf_normalizes_extractor_whitespace_before_chunking(settings):
+    documents = parse_document(
+        make_pdf("Nave\n \nhas\t a   documented incident response plan."), "pdf", settings
+    )
+    assert documents[0].page_content == "Nave has a documented incident response plan."
+    assert "\n" not in documents[0].page_content
+
+
 @pytest.mark.parametrize(
     ("pdf", "code"),
     [

@@ -5,7 +5,7 @@ import asyncio
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 
-from app.models import NOT_FOUND, EvidenceQuote, GeneratedAnswer
+from app.models import NOT_FOUND, GeneratedAnswer
 
 
 class DeterministicEmbeddings(Embeddings):
@@ -41,13 +41,13 @@ class GroundedGenerator:
         delays_by_question: dict[str, float] | None = None,
         error: Exception | None = None,
         gate: asyncio.Event | None = None,
-        invalid_citation: str | None = None,
+        invalid_chunk_id: bool = False,
     ):
         self.delay = delay
         self.delays_by_question = delays_by_question or {}
         self.error = error
         self.gate = gate
-        self.invalid_citation = invalid_citation
+        self.invalid_chunk_id = invalid_chunk_id
         self.started = asyncio.Event()
         self.calls: list[tuple[str, list[Document]]] = []
         self.completed_questions: list[str] = []
@@ -89,21 +89,14 @@ class GroundedGenerator:
             facts = [("AES-256", "Data is encrypted using AES-256.")]
         elif "retention" in question_lower:
             facts = [("30 days", "Retention is 30 days.")]
-        for quote, answer in facts:
+        for marker, answer in facts:
             for chunk in chunks:
-                if quote in chunk.page_content:
+                if marker in chunk.page_content:
                     return GeneratedAnswer(
                         supported=True,
                         answer=answer,
-                        evidence=[
-                            EvidenceQuote(
-                                chunk_id="invented"
-                                if self.invalid_citation == "id"
-                                else chunk.metadata["chunk_id"],
-                                quote="fabricated passage"
-                                if self.invalid_citation == "quote"
-                                else quote,
-                            )
+                        evidence_chunk_ids=[
+                            "invented" if self.invalid_chunk_id else chunk.metadata["chunk_id"]
                         ],
                     )
-        return GeneratedAnswer(supported=False, answer=NOT_FOUND, evidence=[])
+        return GeneratedAnswer(supported=False, answer=NOT_FOUND, evidence_chunk_ids=[])

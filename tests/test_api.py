@@ -79,7 +79,8 @@ async def test_json_rag_deduplicates_work_and_restores_original_order():
             "The service is hosted on AWS.",
             "Data is encrypted using AES-256.",
         ]
-        assert results[0]["citations"] == [{"page": None, "excerpt": "AWS"}]
+        assert results[0]["citations"][0]["page"] is None
+        assert '"hosting": "AWS"' in results[0]["citations"][0]["excerpt"]
         assert len(embeddings.batches) == 2  # One document batch, one deduplicated query batch.
         assert len(embeddings.batches[0]) == 1
         assert embeddings.batches[1] == questions[:2]
@@ -89,7 +90,7 @@ async def test_json_rag_deduplicates_work_and_restores_original_order():
 
 async def test_pdf_uses_real_page_extraction_chunking_and_vector_retrieval():
     settings = Settings(_env_file=None, retrieval_k=1, chunk_size=80, chunk_overlap=10)
-    document = make_pdf("", "The service is hosted on AWS.", "Encryption uses AES-256.")
+    document = make_pdf("", "The\n \nservice is\t hosted  on AWS.", "Encryption uses AES-256.")
     async with api_client(settings=settings) as (client, _, generator):
         response = await client.post(
             "/qa",
@@ -99,8 +100,11 @@ async def test_pdf_uses_real_page_extraction_chunking_and_vector_retrieval():
         )
         assert response.status_code == 200, response.text
         results = response.json()["results"]
-        assert results[0]["citations"] == [{"page": 3, "excerpt": "AES-256"}]
-        assert results[1]["citations"] == [{"page": 2, "excerpt": "AWS"}]
+        assert results[0]["citations"][0]["page"] == 3
+        assert "AES-256" in results[0]["citations"][0]["excerpt"]
+        assert results[1]["citations"][0]["page"] == 2
+        assert "AWS" in results[1]["citations"][0]["excerpt"]
+        assert "\n" not in results[1]["citations"][0]["excerpt"]
         assert all(len(context) == 1 for _, context in generator.calls)
 
 
@@ -223,9 +227,8 @@ async def test_actual_body_limit_applies_without_content_length():
         assert not embeddings.batches
 
 
-@pytest.mark.parametrize("invalid_citation", ["quote", "id"])
-async def test_fabricated_evidence_is_a_provider_error(invalid_citation):
-    async with api_client(generator=GroundedGenerator(invalid_citation=invalid_citation)) as (
+async def test_unknown_evidence_chunk_id_is_a_provider_error():
+    async with api_client(generator=GroundedGenerator(invalid_chunk_id=True)) as (
         client,
         _,
         _,
@@ -234,7 +237,7 @@ async def test_fabricated_evidence_is_a_provider_error(invalid_citation):
         assert response.status_code == 502
         assert response.json()["error"]["code"] == "provider_response_invalid"
         assert "results" not in response.json()
-        assert "fabricated passage" not in response.text
+        assert "invented" not in response.text
 
 
 async def test_provider_failure_is_retried_once_then_http_503():

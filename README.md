@@ -59,7 +59,7 @@ Both models use the same `OPENAI_API_KEY`, subject to that key's project/model p
 | Job | Model | Output |
 | --- | --- | --- |
 | Convert source chunks and questions for similarity search | `text-embedding-3-small` (configurable with `EMBEDDING_MODEL`) | Numerical vectors |
-| Read retrieved text and write the answer | `gpt-4o-mini` (fixed) | Structured answer and evidence quotes |
+| Read retrieved text and write the answer | `gpt-4o-mini` (fixed) | Structured answer and selected chunk IDs |
 
 This interprets the challenge's “gpt-4o-mini only” instruction as applying to answer generation. An embedding model is a separate component needed for semantic retrieval, not a second answer writer. The provided key must permit both calls. See the [OpenAI embeddings guide](https://developers.openai.com/api/docs/guides/embeddings) and [Structured Outputs guide](https://developers.openai.com/api/docs/guides/structured-outputs).
 
@@ -97,7 +97,7 @@ Successful responses use the required `results` shape:
 }
 ```
 
-This is an illustrative subset; a real response includes every submitted question in its original order. Identical question strings reuse the same result. PDF citations use the physical page position starting at 1, not the printed page label. JSON has no pages, so `page` is `null`; its excerpts refer to deterministic JSON normalization (sorted keys, two-space indentation, Unicode preserved). Decimal values retain their precision through `Decimal` and `simplejson`; numbers remain JSON numbers, not strings. Non-finite values and numbers outside supported numeric ranges are rejected. Named fields with empty lists, nulls, or empty strings are retained as source evidence; a null does not automatically mean "no."
+This is an illustrative subset; a real response includes every submitted question in its original order. Identical question strings reuse the same result. The model selects server-issued chunk IDs and never generates citation text or page numbers. The server resolves each selected ID to the complete source chunk, so an excerpt can be up to the configured chunk size (1,000 characters by default). PDF citations use the physical page position starting at 1, not the printed page label. JSON has no pages, so `page` is `null`; its excerpts refer to deterministic JSON normalization (sorted keys, two-space indentation, Unicode preserved). Decimal values retain their precision through `Decimal` and `simplejson`; numbers remain JSON numbers, not strings. Non-finite values and numbers outside supported numeric ranges are rejected. Named fields with empty lists, nulls, or empty strings are retained as source evidence; a null does not automatically mean "no."
 
 Every response has an `X-Request-ID` header. Errors are sanitized JSON:
 
@@ -110,7 +110,7 @@ Every response has an `X-Request-ID` header. Errors are sanitized JSON:
 | `413` | Byte, question, page, extracted-text, nesting, or chunk limit exceeded |
 | `415` | Unsupported request/file format or conflicting extension and media type |
 | `422` | Malformed uploads, invalid question JSON, corrupt/encrypted/textless PDF, empty source |
-| `502` | Invalid provider response, fabricated citation, or rejected upstream request |
+| `502` | Invalid provider response, unknown evidence chunk ID, or rejected upstream request |
 | `503` | Missing/invalid key, unavailable model/provider, rate limiting, or local capacity full |
 | `504` | Provider timeout or whole-request deadline exceeded |
 | `500` | Unexpected internal failure, without exposing exception details |
@@ -126,15 +126,15 @@ POST /qa
   → batched embeddings → request-owned in-memory FAISS index
   → batched embeddings of unique questions → top-k source chunks
   → concurrent gpt-4o-mini structured answers
-  → exact citation checks → results in original order
+  → server-side chunk-ID resolution → results in original order
 ```
 
 For code review, start at `app/main.py` (the HTTP contract), then `app/service.py` (the complete workflow). The service calls `ingestion`, `retrieval`, and `generation`; `runtime` provides shared resource controls and `middleware` bounds incoming requests. Tests demonstrate the intended behavior at each boundary.
 
 - **Two-step RAG:** retrieval always precedes generation. No model decides whether to search, and no planner, grader, or subagent adds model calls. One normal generation call is made per unique question; only transient provider failures can cause one retry.
 - **In-memory FAISS:** a normalized vector index and LangChain document store are built once per request and reused for all questions. All query vectors are normalized and searched in one native FAISS batch; its result rows are mapped back through the LangChain document store in question order. Missing neighbors (`-1` when fewer than `k` chunks exist) are skipped. Similarity uses L2 distance on normalized vectors, which has the same ranking as cosine similarity. Source text and metadata remain alongside vectors; the LLM receives text, not vector values. No arbitrary similarity cutoff is treated as proof of absence.
-- **Chunking:** recursive character splitting starts at 1,000 characters with 200-character target overlap. Chunks cannot cross PDF pages or JSON records and retain character offsets. A root JSON object is one record, which can produce many chunks; top-level array items are separate records. Nested arrays such as `pages` are not yet recognized as record boundaries, so a chunk may lose its enclosing title or organization. See the concrete reproduction and acceptance criteria in [NEXT_STEPS.md](docs/NEXT_STEPS.md). This is a baseline for evaluation against real SOC 2 reports, not an optimal setting established by benchmarking.
-- **Grounding:** strict structured output carries a supported flag, answer, chunk IDs, and verbatim evidence. Only retrieved IDs and exact nonblank source quotes are accepted. Page numbers come from server metadata. Invalid citations fail with `502`; insufficient evidence produces the prescribed fallback. These checks establish source identity and quote accuracy, not semantic proof that every generated claim is entailed.
+- **Extraction and chunking:** PDF extractors can emit a newline for every positioned word, especially in table-heavy audit reports. PDF whitespace is therefore normalized to one space before limits, chunking, embeddings, generation, and citation display; words and punctuation are preserved, but visual layout is not. Recursive character splitting starts at 1,000 characters with 200-character target overlap. Chunks cannot cross PDF pages or JSON records and retain character offsets into the normalized source representation. A root JSON object is one record, which can produce many chunks; top-level array items are separate records. Nested arrays such as `pages` are not yet recognized as record boundaries, so a chunk may lose its enclosing title or organization. See the concrete reproduction and acceptance criteria in [NEXT_STEPS.md](docs/NEXT_STEPS.md). This is a baseline for evaluation against real SOC 2 reports, not an optimal setting established by benchmarking.
+- **Grounding:** strict structured output carries a supported flag, concise answer, and selected chunk IDs. Only IDs from that question's retrieved context are accepted. Citation text and page numbers come entirely from server-owned chunk content and metadata; the model cannot author either. Unknown IDs fail with `502`, while insufficient evidence produces the prescribed fallback. This establishes source identity and traceability, not semantic proof that every generated claim is entailed by the selected chunk.
 - **Concurrency:** async provider I/O shares a process-wide semaphore; document and question embeddings are batched. Synchronous extraction, splitting, and FAISS work run in a bounded thread pool. On one generation failure, sibling generation tasks are cancelled. Results retain input order.
 - **Privacy:** the service does not persist uploads or indexes. The multipart parser may temporarily spool large uploads to disk; handles close after success/failure. The total request body is buffered in memory only after enforcing its byte limit during receipt. LangSmith tracing is disabled for the pipeline, and logs contain operational metadata rather than report contents, questions, answers, filenames, or credentials. Document text is still sent to OpenAI for embeddings and retrieved passages for generation.
 
@@ -163,7 +163,7 @@ Application events are JSON logs with a generated request ID, stage timings, cou
 
 ### Limits of this first pass
 
-- PDF extraction has no OCR or specialized table/layout reconstruction. Page-local splitting may lose relationships that span pages. JSON records split into several chunks may also lose distant context.
+- PDF extraction has no OCR or specialized table/layout reconstruction. Whitespace normalization makes positioned text readable but does not reconstruct table columns, and page-local splitting may lose relationships that span pages. JSON records split into several chunks may also lose distant context.
 - No authentication or durable tenancy model is implemented. Run locally for the challenge; a public deployment needs appropriate access controls and service-wide resource management. Limits are per worker process, so multiple Uvicorn workers multiply them.
 - A Python thread cannot be forcibly stopped. Cancelling an HTTP request leaves already-running parsing/index work alive until it completes; its worker slot stays occupied, and no native index is reset while a worker might read it. Byte/page/text limits help bound ordinary workloads but do not provide hard CPU/memory isolation for hostile PDFs. Process isolation is a future hardening step.
 - Mocked tests establish pipeline behavior, not live-model answer quality or perfect resistance to prompt injection. Evaluate real sample questions for retrieval recall, faithful answers, correct abstention, citation accuracy, latency, and cost before claiming production quality.

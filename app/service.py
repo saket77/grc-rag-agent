@@ -14,6 +14,7 @@ from app.errors import ServiceError
 from app.generation import AnswerGenerator, OpenAIAnswerGenerator, validate_answer
 from app.ingestion import parse_document, parse_questions, split_documents
 from app.models import AnswerResult, QAResponse
+from app.observability import question_number_context
 from app.retrieval import IndexBuilder
 from app.runtime import ProviderRunner, WorkerPool
 
@@ -105,7 +106,7 @@ class QAService:
         )
         try:
             started = perf_counter()
-            query_vectors = await builder.embed(unique_questions)
+            query_vectors = await builder.embed(unique_questions, operation="question_embedding")
             contexts = await self.workers.run(
                 index.search, query_vectors, self.settings.retrieval_k
             )
@@ -117,18 +118,65 @@ class QAService:
                 },
             )
 
-            async def answer_one(question, context) -> AnswerResult:
-                result = await self.provider.call(
-                    lambda: self.generator.generate(question, context)
+            async def answer_one(question_number, question, context) -> AnswerResult:
+                token = question_number_context.set(question_number)
+                answer_started = perf_counter()
+                logger.info(
+                    "answer_task_started",
+                    extra={"stage": "generation", "context_chunk_count": len(context)},
                 )
-                return validate_answer(question, context, result)
+                try:
+                    generated = await self.provider.call(
+                        lambda: self.generator.generate(question, context),
+                        operation="answer_generation",
+                        item_count=len(context),
+                    )
+                    result = validate_answer(question, context, generated)
+                    logger.info(
+                        "answer_task_complete",
+                        extra={
+                            "stage": "generation",
+                            "duration_ms": round((perf_counter() - answer_started) * 1000, 2),
+                            "supported": generated.supported,
+                            "selected_chunk_count": len(generated.evidence_chunk_ids),
+                            "citation_count": len(result.citations),
+                            "citation_chars": sum(
+                                len(citation.excerpt) for citation in result.citations
+                            ),
+                        },
+                    )
+                    return result
+                except asyncio.CancelledError:
+                    logger.info(
+                        "answer_task_cancelled",
+                        extra={
+                            "stage": "generation",
+                            "duration_ms": round((perf_counter() - answer_started) * 1000, 2),
+                        },
+                    )
+                    raise
+                except ServiceError as exc:
+                    logger.warning(
+                        "answer_task_failed",
+                        extra={
+                            "stage": "generation",
+                            "duration_ms": round((perf_counter() - answer_started) * 1000, 2),
+                            "code": exc.code,
+                        },
+                    )
+                    raise
+                finally:
+                    question_number_context.reset(token)
 
             started = perf_counter()
             tasks: dict[str, asyncio.Task] = {}
             try:
                 async with asyncio.TaskGroup() as group:
-                    for question, context in zip(unique_questions, contexts, strict=True):
-                        tasks[question] = group.create_task(answer_one(question, context))
+                    pairs = zip(unique_questions, contexts, strict=True)
+                    for question_number, (question, context) in enumerate(pairs, start=1):
+                        tasks[question] = group.create_task(
+                            answer_one(question_number, question, context)
+                        )
             except* ServiceError as group_error:
                 raise group_error.exceptions[0] from None
             logger.info(

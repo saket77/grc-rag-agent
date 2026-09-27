@@ -12,7 +12,7 @@ from pydantic import SecretStr
 from app.config import Settings
 from app.errors import ServiceError
 from app.generation import OpenAIAnswerGenerator, validate_answer
-from app.models import NOT_FOUND, EvidenceQuote, GeneratedAnswer
+from app.models import NOT_FOUND, GeneratedAnswer
 
 
 @pytest.fixture
@@ -33,32 +33,31 @@ def supported_answer(**changes):
     fields = {
         "supported": True,
         "answer": "The service is hosted on AWS.",
-        "evidence": [EvidenceQuote(chunk_id="chunk-1", quote="hosted on AWS.")],
+        "evidence_chunk_ids": ["chunk-1"],
     }
     fields.update(changes)
     return GeneratedAnswer(**fields)
 
 
-def test_citation_page_and_quote_are_resolved_from_source(chunks):
+def test_citation_page_and_full_chunk_are_resolved_from_source(chunks):
     result = validate_answer("Where?", chunks, supported_answer())
     assert result.model_dump() == {
         "question": "Where?",
         "answer": "The service is hosted on AWS.",
-        "citations": [{"page": 12, "excerpt": "hosted on AWS."}],
+        "citations": [{"page": 12, "excerpt": chunks[0].page_content}],
     }
 
 
 def test_json_citations_have_null_page_and_duplicates_are_removed(chunks):
-    evidence = EvidenceQuote(chunk_id="chunk-2", quote='"encryption": "AES-256"')
-    answer = supported_answer(answer="AES-256", evidence=[evidence, evidence])
+    answer = supported_answer(answer="AES-256", evidence_chunk_ids=["chunk-2", "chunk-2"])
     result = validate_answer("Encryption?", chunks, answer)
     assert len(result.citations) == 1
     assert result.citations[0].page is None
-    assert result.citations[0].excerpt == '"encryption": "AES-256"'
+    assert result.citations[0].excerpt == chunks[1].page_content
 
 
 def test_unsupported_always_returns_exact_contract(chunks):
-    generated = GeneratedAnswer(supported=False, answer="I don't know", evidence=[])
+    generated = GeneratedAnswer(supported=False, answer="I don't know", evidence_chunk_ids=[])
     assert validate_answer("Unknown?", chunks, generated).model_dump() == {
         "question": "Unknown?",
         "answer": NOT_FOUND,
@@ -71,12 +70,8 @@ def test_unsupported_always_returns_exact_contract(chunks):
     [
         {"answer": " "},
         {"answer": NOT_FOUND},
-        {"evidence": []},
-        {"evidence": [EvidenceQuote(chunk_id="invented", quote="hosted on AWS.")]},
-        {"evidence": [EvidenceQuote(chunk_id="chunk-1", quote="hosted on Azure.")]},
-        {"evidence": [EvidenceQuote(chunk_id="chunk-1", quote="HOSTED ON AWS.")]},
-        {"evidence": [EvidenceQuote(chunk_id="chunk-1", quote="  ")]},
-        {"evidence": [EvidenceQuote(chunk_id="chunk-1", quote="a" * 1001)]},
+        {"evidence_chunk_ids": []},
+        {"evidence_chunk_ids": ["invented"]},
     ],
 )
 def test_invalid_evidence_is_an_error_not_abstention(chunks, changes):
@@ -84,6 +79,26 @@ def test_invalid_evidence_is_an_error_not_abstention(chunks, changes):
         validate_answer("Where?", chunks, supported_answer(**changes))
     assert exc.value.status_code == 502
     assert exc.value.code == "provider_response_invalid"
+
+
+def test_unknown_evidence_id_logs_safe_diagnostic(caplog, chunks):
+    generated = GeneratedAnswer(
+        supported=True,
+        answer="Private generated answer",
+        evidence_chunk_ids=["private-invented-id"],
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app"), pytest.raises(ServiceError):
+        validate_answer("Private question", chunks, generated)
+
+    rejection = next(
+        record for record in caplog.records if record.msg == "answer_response_rejected"
+    )
+    assert rejection.code == "evidence_chunk_id_unknown"
+    assert rejection.stage == "citation_validation"
+    assert rejection.evidence_index == 0
+    assert "Private" not in caplog.text
+    assert "invented" not in caplog.text
 
 
 @pytest.mark.parametrize("page", [0, -1, "12", True])
@@ -138,8 +153,12 @@ async def test_provider_uses_fixed_model_and_strict_schema(provider, chunks, cap
     chat.return_value.with_structured_output.assert_called_once_with(
         GeneratedAnswer, method="json_schema", strict=True, include_raw=True
     )
+    schema_text = json.dumps(GeneratedAnswer.model_json_schema())
+    assert "evidence_chunk_ids" in schema_text
+    assert '"quote"' not in schema_text
     messages = runnable.ainvoke.call_args.args[0]
     assert "untrusted data" in messages[0].content
+    assert "Never generate quotations" in messages[0].content
     envelope = json.loads(messages[1].content)
     assert envelope["question"] == "Where is our private service?"
     assert envelope["chunks"][0] == {

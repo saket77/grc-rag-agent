@@ -6,6 +6,7 @@ from contextvars import ContextVar
 from datetime import UTC, datetime
 
 request_id_context: ContextVar[str | None] = ContextVar("request_id", default=None)
+question_number_context: ContextVar[int | None] = ContextVar("question_number", default=None)
 SAFE_FIELDS = (
     "request_id",
     "stage",
@@ -22,6 +23,14 @@ SAFE_FIELDS = (
     "total_tokens",
     "supported",
     "citation_count",
+    "selected_chunk_count",
+    "operation",
+    "batch_number",
+    "item_count",
+    "context_chunk_count",
+    "evidence_index",
+    "citation_chars",
+    "finish_reason",
 )
 
 
@@ -33,6 +42,9 @@ class JsonFormatter(logging.Formatter):
             "event": record.msg,
             "request_id": request_id_context.get(),
         }
+        question_number = question_number_context.get()
+        if question_number is not None:
+            result["question_number"] = question_number
         for field in SAFE_FIELDS:
             if hasattr(record, field):
                 result[field] = getattr(record, field)
