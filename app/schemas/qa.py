@@ -28,14 +28,21 @@ class QAResponse(BaseModel):
     results: list[AnswerResult]
 
 
-class GeneratedPartAnswer(BaseModel):
+class GeneratedPartContent(BaseModel):
+    """Model-written fields; the request schema supplies the part identity."""
+
     model_config = ConfigDict(extra="forbid", strict=True)
-    part_id: str
     status: Literal["supported", "partial", "not_found"]
     answer: str = Field(
         description="Concise prose without chunk IDs, part IDs, or inline citation annotations."
     )
     evidence_chunk_ids: list[str]
+
+
+class GeneratedPartAnswer(GeneratedPartContent):
+    """Normalized internal result, after restoring server-owned part IDs."""
+
+    part_id: str
 
 
 class GeneratedAnswer(BaseModel):

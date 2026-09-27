@@ -97,6 +97,7 @@ assert [result["question"] for result in results] == [
     "How frequently do you conduct penetration tests?",
 ]
 assert results[0]["answer"] == "The service is hosted on AWS."
+assert [result["status"] for result in results] == ["found", "not_found", "not_found"]
 assert results[0]["citations"][0]["page"] is None
 assert "hosted on AWS" in results[0]["citations"][0]["excerpt"]
 assert results[1]["answer"] == "Not found in document"

@@ -3,17 +3,17 @@ import numpy as np
 import pytest
 from langchain_core.documents import Document
 
-from app.config import Settings
-from app.errors import ServiceError
-from app.planning import build_question_plan
-from app.retrieval import (
+from app.core.config import Settings
+from app.core.errors import ServiceError
+from app.core.runtime import ProviderRunner, WorkerPool
+from app.rag.planning import build_question_plan
+from app.rag.retrieval import (
     DocumentIndex,
     IndexBuilder,
     build_index,
     checked_vectors,
     merge_retrieval_results,
 )
-from app.runtime import ProviderRunner, WorkerPool
 from tests.fakes import DeterministicEmbeddings
 
 
@@ -185,7 +185,7 @@ def test_numbered_labels_preserve_option_text_without_changing_search_queries():
 
 
 async def test_provider_construction_and_shutdown_are_offline():
-    from app.service import QAService
+    from app.services.qa import QAService
 
     service = QAService(Settings(_env_file=None, openai_api_key="test-not-live"))
     try:

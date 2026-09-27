@@ -6,9 +6,9 @@ import httpx
 import pytest
 from openai import APIConnectionError, APIStatusError, RateLimitError
 
-from app.config import Settings
-from app.errors import ServiceError
-from app.runtime import ProviderRunner, WorkerPool
+from app.core.config import Settings
+from app.core.errors import ServiceError
+from app.core.runtime import ProviderRunner, WorkerPool
 
 
 async def test_provider_calls_share_concurrency_limit():

@@ -62,7 +62,7 @@ For VS Code (or an editor using its Python extension), open `grc-rag-agent.code-
 
 `make doctor` is the runtime check: if it succeeds while the editor still reports missing imports, check the editor's interpreter selection and reload its window to refresh the language server. See [VS Code's interpreter selection guidance](https://code.visualstudio.com/docs/python/environments#_select-an-environment) and [Python's virtual environment documentation](https://docs.python.org/3.12/library/venv.html).
 
-For a guided code walkthrough, rubric assessment, and the bug ledger, read [REVIEW.md](REVIEW.md). The proposed next improvements and folder structure are in [NEXT_STEPS.md](docs/NEXT_STEPS.md).
+For a guided code walkthrough, rubric assessment, and the bug ledger, read [REVIEW.md](REVIEW.md). Remaining improvements are in [NEXT_STEPS.md](docs/NEXT_STEPS.md).
 
 ### Which OpenAI models are used?
 
@@ -160,18 +160,30 @@ POST /qa
   → server-side chunk-ID resolution → results in original order
 ```
 
-For code review, start at `app/main.py` (the HTTP contract), then `app/service.py` (the complete workflow). The service calls `ingestion`, `retrieval`, and `generation`; `runtime` provides shared resource controls and `middleware` bounds incoming requests. Tests demonstrate the intended behavior at each boundary.
+For code review, start at `app/main.py` (the HTTP contract), then `app/services/qa.py` (the complete workflow). The service calls `ingestion`, `retrieval`, and `generation`; `runtime` provides shared resource controls and `middleware` bounds incoming requests. Tests demonstrate the intended behavior at each boundary.
+
+```text
+app/
+  main.py       # HTTP entry point; the only file at this level
+  services/     # QA orchestration
+  rag/          # Ingestion, question planning, retrieval, generation, prompts
+  core/         # Configuration, errors, middleware, runtime, observability
+  schemas/      # Public responses and internal generated-answer types
+  static/       # Upload UI
+```
+
+`app` is a namespace package; its Python subpackages have `__init__.py` files.
 
 - **Question parts are a shared contract:** retrieval always precedes generation. No model decides how to decompose or search, and no planner, grader, or subagent adds model calls. One deterministic plan supplies the exact question parts to both retrieval and structured generation, so evidence is searched for every explicit `?` clause or numbered choice instead of relying on one broad embedding to represent a multipart question. Dependent directives such as “If yes, describe” remain attached to the original question. Duplicate original questions and derived queries are computed once, while response order and one result per submitted question are preserved. One normal generation call is made per unique original question; only transient provider failures can cause one retry.
 - **Native multi-question FAISS search:** a normalized vector index and LangChain document store are built once per request and reused for all questions. Embeddings may use several bounded provider batches, but all resulting unique question-part vectors are passed as one matrix to one `store.index.search(matrix, k)` call. FAISS returns one result row per query in the same order; the following Python loop only maps integer positions to documents and does not perform more similarity searches. Each final context keeps the original question's top `k`, then adds unique part-query results round-robin up to `2k`. Missing neighbors (`-1`) are skipped. This batching reduces repeated Python/native boundary overhead without changing per-question ranking semantics. Similarity uses L2 distance on normalized vectors, which has the same ranking as cosine similarity; changing FAISS index type would not improve semantic recall for this exact search.
 - **Extraction and chunking:** PDF extractor whitespace is normalized to one space before limits, chunking, embeddings, generation, and citation display. Recursive character splitting starts at 1,000 characters with 400-character target overlap; the larger measured overlap keeps nearby section headings with continuation evidence. Chunks cannot cross PDF pages or JSON records and retain character offsets into the normalized source representation. A root JSON object is one record, while top-level array items are separate records. Nested arrays such as `pages` are not yet recognized as record boundaries. See [NEXT_STEPS.md](docs/NEXT_STEPS.md) for the remaining JSON-context work.
-- **Grounding and partial answers:** strict structured output returns `supported`, `partial`, or `not_found` for every part in the shared question plan and selects server-issued chunk IDs. The server validates the part set and IDs, resolves citations from source-owned chunks, and preserves grounded partial answers regardless of part count. A partial answer must address the requested property and identify what remains unspecified; merely related facts do not answer it. When every part is `not_found`, the server returns the exact fallback with no citations. Numbered options retain display-only labels for concise missing-part messages; retrieval and generation still use the same full question text. The prompt and answer-field description restrict internal IDs to the structured evidence field. Validation establishes source identity and traceability, not deterministic semantic entailment of every claim or guaranteed prose compliance.
+- **Grounding and partial answers:** each generation call gets a strict response schema whose `parts` object requires exactly the IDs in its question plan, with no extra keys. Each value contains `status` (`supported`, `partial`, or `not_found`), `answer`, and `evidence_chunk_ids`. The server normalizes these keyed results into plan order, validates the part set and IDs, resolves citations from source-owned chunks, and preserves grounded partial answers regardless of part count. Generic input/output examples in `app/rag/prompts.py` illustrate full support, partial support, missing evidence, and unsupported inferences. A partial answer must address the requested property and identify what remains unspecified; merely related facts do not answer it. When every part is `not_found`, the server returns the exact fallback with no citations. Numbered options retain display-only labels for concise missing-part messages; retrieval and generation still use the same full question text. The prompt and answer-field description restrict internal IDs to the structured evidence field. The public API and number of model calls are unchanged. Schema validation establishes response shape and source identity, not semantic correctness or guaranteed prose compliance.
 - **Concurrency:** async provider I/O shares a process-wide semaphore; document and question embeddings are batched. Synchronous extraction, splitting, and FAISS work run in a bounded thread pool. On one generation failure, sibling generation tasks are cancelled. Results retain input order.
 - **Privacy:** the service does not persist uploads or indexes. The multipart parser may temporarily spool large uploads to disk; handles close after success/failure. The total request body is buffered in memory only after enforcing its byte limit during receipt. LangSmith tracing is disabled for the pipeline, and logs contain operational metadata rather than report contents, questions, answers, filenames, or credentials. Document text is still sent to OpenAI for embeddings and retrieved passages for generation.
 
 ### Configurable limits
 
-Settings live in `app/config.py`; all are environment-configurable except the fixed answer model. `.env.example` lists them. Limits must be positive, and chunk overlap must be smaller than chunk size.
+Settings live in `app/core/config.py`; all are environment-configurable except the fixed answer model. `.env.example` lists them. Limits must be positive, and chunk overlap must be smaller than chunk size.
 
 | Setting | Default |
 | --- | --- |

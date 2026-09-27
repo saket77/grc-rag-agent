@@ -11,8 +11,8 @@ from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pypdf import PdfReader
 
-from app.config import Settings
-from app.errors import ServiceError
+from app.core.config import Settings
+from app.core.errors import ServiceError
 
 
 def validate_file_type(filename: str | None, content_type: str | None, allowed: set[str]) -> str:

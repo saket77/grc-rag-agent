@@ -10,8 +10,8 @@ from typing import Any
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
 
-from app.config import Settings
-from app.errors import ServiceError
+from app.core.config import Settings
+from app.core.errors import ServiceError
 
 logger = logging.getLogger("app")
 

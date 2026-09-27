@@ -1,6 +1,6 @@
 """Credential-free provider wiring used only by the real-HTTP CI smoke test."""
 
-from app.config import Settings
+from app.core.config import Settings
 from app.main import create_app
 from tests.fakes import DeterministicEmbeddings, GroundedGenerator
 

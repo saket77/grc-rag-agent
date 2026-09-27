@@ -35,8 +35,8 @@ test: require-venv
 	$(VENV_PYTHON) -m pytest -q
 
 check: require-venv
-	$(VENV_PYTHON) -m ruff check app tests scripts
-	$(VENV_PYTHON) -m ruff format --check app tests scripts
+	$(VENV_PYTHON) -m ruff check app tests scripts .github/ci
+	$(VENV_PYTHON) -m ruff format --check app tests scripts .github/ci
 
 sample:
 	curl --fail-with-body http://127.0.0.1:$(PORT)/qa \

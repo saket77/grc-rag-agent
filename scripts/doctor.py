@@ -32,7 +32,7 @@ def main() -> int:
     if not valid:
         return 1
 
-    from app.config import Settings
+    from app.core.config import Settings
 
     try:
         settings = Settings()

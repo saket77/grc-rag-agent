@@ -6,9 +6,9 @@ import httpx
 import pytest
 from openai import APIConnectionError, AuthenticationError
 
-from app.config import Settings
+from app.core.config import Settings
 from app.main import create_app
-from app.models import NOT_FOUND, GeneratedAnswer, GeneratedPartAnswer
+from app.schemas.qa import NOT_FOUND, GeneratedAnswer, GeneratedPartAnswer
 from tests.fakes import DeterministicEmbeddings, GroundedGenerator
 from tests.pdf_factory import make_pdf
 

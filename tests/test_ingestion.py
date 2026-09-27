@@ -4,9 +4,9 @@ from decimal import Decimal
 import pytest
 from langchain_core.documents import Document
 
-from app.config import Settings
-from app.errors import ServiceError
-from app.ingestion import (
+from app.core.config import Settings
+from app.core.errors import ServiceError
+from app.rag.ingestion import (
     parse_document,
     parse_questions,
     split_documents,

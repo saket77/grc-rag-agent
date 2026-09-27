@@ -11,14 +11,14 @@ from langchain_core.embeddings import Embeddings
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException
 
-from app.config import Settings
-from app.errors import ServiceError
-from app.generation import AnswerGenerator
-from app.ingestion import validate_file_type
-from app.middleware import RequestGuard, error_response
-from app.models import QAResponse
-from app.observability import configure_logging
-from app.service import QAService
+from app.core.config import Settings
+from app.core.errors import ServiceError
+from app.core.middleware import RequestGuard, error_response
+from app.core.observability import configure_logging
+from app.rag.generation import AnswerGenerator
+from app.rag.ingestion import validate_file_type
+from app.schemas.qa import QAResponse
+from app.services.qa import QAService
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 

@@ -4,8 +4,8 @@ import logging
 import pytest
 from pydantic import ValidationError
 
-from app.config import Settings
-from app.observability import JsonFormatter, question_number_context, request_id_context
+from app.core.config import Settings
+from app.core.observability import JsonFormatter, question_number_context, request_id_context
 
 
 def test_configuration_reads_environment_without_exposing_secret(monkeypatch):

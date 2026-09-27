@@ -8,9 +8,9 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 
-from app.config import Settings
-from app.errors import ServiceError
-from app.runtime import ProviderRunner, WorkerPool
+from app.core.config import Settings
+from app.core.errors import ServiceError
+from app.core.runtime import ProviderRunner, WorkerPool
 
 
 def checked_vectors(vectors: list[list[float]], count: int) -> np.ndarray:

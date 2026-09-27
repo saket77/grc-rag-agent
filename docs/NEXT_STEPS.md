@@ -1,6 +1,6 @@
 # Improvements to review one at a time
 
-The first follow-up implements the four known validation/evidence bugs, native FAISS batch search, and a minimal upload UI. This document records the next design decisions; the proposed folder moves and JSON-context changes are not implemented yet.
+The follow-up work implements the validation/evidence fixes, native FAISS batch search, a minimal upload UI, and the folder layout below. JSON-context changes remain a design decision, not an implemented feature.
 
 ## 1. Preserve JSON context and expose precise JSON citations
 
@@ -24,36 +24,37 @@ Acceptance tests: root object and root array behavior; nested page objects; two 
 
 ## 2. A folder structure with meaningful boundaries
 
-Suggested follow-up refactor, after reviewing the behavioral changes:
+Implemented layout (`main.py` is the only file directly under `app`):
 
 ```text
 app/
-  __init__.py
   main.py
-  config.py
-  errors.py
-  api/
-    __init__.py
-    schemas.py          # Public question/answer/citation response shapes
+  core/
+    config.py
+    errors.py
     middleware.py
+    runtime.py          # WorkerPool and ProviderRunner
+    observability.py
+  services/
+    qa.py               # Request orchestration
   rag/
-    __init__.py
-    service.py
     ingestion.py
+    planning.py         # Shared QuestionPlan for retrieval and generation
     retrieval.py
     generation.py
-    schemas.py          # Internal generated answer and evidence shapes
-  infrastructure/
-    __init__.py
-    execution.py        # Current runtime.py: WorkerPool and ProviderRunner
-    logging.py
+    prompts.py          # Generation instructions and generic response examples
+  schemas/
+    qa.py               # Public responses and internal generated-answer types
   static/
     index.html
     app.js
     styles.css
 ```
 
-`runtime.py` currently has two responsibilities: execute synchronous parsing/index work in bounded threads, and control asynchronous provider calls with concurrency limits, timeouts, and retry policy. `execution.py` makes that role clearer. File moves should be one behavior-preserving change with updated imports and the same tests, not combined with a new retrieval algorithm.
+The Python subpackages include `__init__.py`; `app` itself is a namespace package.
+The move preserved retrieval and runtime behavior and passed the existing offline suite before
+the generation changes. `core/runtime.py` retains bounded synchronous work and asynchronous
+provider concurrency, timeouts, and retries. No new retrieval algorithm accompanies this refactor.
 
 ## 3. What checked_vectors actually protects
 
@@ -67,6 +68,13 @@ FAISS expects a rectangular matrix of 32-bit floats: one row per input text and 
 It does not create embeddings or judge whether their meaning is correct. `DocumentIndex.search` also checks query dimensions against the index. The vector store is FAISS plus LangChain's accompanying chunk-text/metadata store, all in process.
 
 ## 4. Evaluation completed and remaining work
+
+The latest generation change adds generic response examples and a request-specific keyed-parts
+schema to prevent extra or missing answer parts. All ten subsequent live requests returned HTTP
+200 with stable public statuses. Q3 remained correct and Q4 correctly abstained; Q1 still overclaimed,
+Q2 mislabeled background as partial support, and Q5 omitted the documented monitoring signals.
+Capture current contexts and test generation against fixed evidence before more retrieval changes.
+The older results below do not establish the latest prompt's answer quality.
 
 A first fixed live evaluation now covers five SOC 2 questions across ten runs. It records retrieved source identities, support/abstention behavior, citation pages, provider-call count, and elapsed time. Deterministic decomposition plus 1,000/400 chunking restored the incident-notification evidence; a `k=6/12/20` sweep showed that deeper vector retrieval alone did not. A BM25/vector experiment improved exact policy-term recall but did not retrieve the direct timing evidence, so hybrid retrieval was not shipped. A 700/140 chunking experiment also failed that recall gate.
 

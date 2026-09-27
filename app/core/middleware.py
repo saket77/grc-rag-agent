@@ -8,9 +8,9 @@ from uuid import uuid4
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from app.config import Settings
-from app.errors import ServiceError
-from app.observability import request_id_context
+from app.core.config import Settings
+from app.core.errors import ServiceError
+from app.core.observability import request_id_context
 
 logger = logging.getLogger("app")
 

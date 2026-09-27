@@ -8,7 +8,7 @@ from time import perf_counter
 import numpy as np
 from langchain_core.documents import Document
 
-from app.retrieval import DocumentIndex, build_index, checked_vectors
+from app.rag.retrieval import DocumentIndex, build_index, checked_vectors
 from tests.fakes import DeterministicEmbeddings
 
 

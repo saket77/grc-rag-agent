@@ -5,8 +5,8 @@ import asyncio
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 
-from app.models import NOT_FOUND, GeneratedAnswer, GeneratedPartAnswer
-from app.planning import QuestionPlan
+from app.rag.planning import QuestionPlan
+from app.schemas.qa import NOT_FOUND, GeneratedAnswer, GeneratedPartAnswer
 
 
 class DeterministicEmbeddings(Embeddings):

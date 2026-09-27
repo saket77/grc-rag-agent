@@ -9,15 +9,15 @@ from langchain_core.embeddings import Embeddings
 from langchain_openai import OpenAIEmbeddings
 from langsmith import tracing_context
 
-from app.config import Settings
-from app.errors import ServiceError
-from app.generation import AnswerGenerator, OpenAIAnswerGenerator, validate_answer
-from app.ingestion import parse_document, parse_questions, split_documents
-from app.models import NOT_FOUND, AnswerResult, QAResponse
-from app.observability import question_number_context
-from app.planning import QuestionPlan, build_question_plan
-from app.retrieval import IndexBuilder, merge_retrieval_results
-from app.runtime import ProviderRunner, WorkerPool
+from app.core.config import Settings
+from app.core.errors import ServiceError
+from app.core.observability import question_number_context
+from app.core.runtime import ProviderRunner, WorkerPool
+from app.rag.generation import AnswerGenerator, OpenAIAnswerGenerator, validate_answer
+from app.rag.ingestion import parse_document, parse_questions, split_documents
+from app.rag.planning import QuestionPlan, build_question_plan
+from app.rag.retrieval import IndexBuilder, merge_retrieval_results
+from app.schemas.qa import NOT_FOUND, AnswerResult, QAResponse
 
 logger = logging.getLogger("app")
 
